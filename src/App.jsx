@@ -210,8 +210,6 @@ const SkuImportModal = ({ onClose, onDone, userName, products }) => {
       reader.readAsText(file);
     }
   };
-    reader.readAsText(file);
-  };
 
   const run = async () => {
     if (skus.length === 0) { alert("مفيش SKUs"); return; }
