@@ -241,7 +241,7 @@ const SkuImportModal = ({ onClose, onDone, userName, products }) => {
       const sku = toScrape[i];
       setProgress(Math.round(((i + 1) / toScrape.length) * 100));
       try {
-        const url = `https://www.noon.com/uae-en/${sku}/p/`;
+        const url = `https://www.noon.com/uae-en/search/?q=${sku}`;
         const items = await apifyRun(APIFY_UAE, { startUrl: url, maxProducts: 1, maxPages: 1 }, token);
         if (items.length > 0) {
           const item = items[0];
