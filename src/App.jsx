@@ -235,7 +235,7 @@ const ScrapeEgyptModal = ({ onClose, products, onDone, userName }) => {
       setProgress(Math.round(((i + batch.length) / toScrape.length) * 100));
       log(`📦 batch [${i + 1}–${i + batch.length}] من ${toScrape.length}`);
       try {
-        const items = await apifyRun(APIFY_EG, { urls: batch.map(p => p.egypt_url) }, token);
+        const items = await apifyRun(APIFY_EG, { Urls: batch.map(p => p.egypt_url), proxyConfiguration: { useApifyProxy: true, apifyProxyGroups: ["RESIDENTIAL"] } }, token);
         log(`  ✅ جاب ${items.length} نتيجة`);
 
         for (const item of items) {
