@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 
 // ===================== CONFIG =====================
 const SUPABASE_URL = "https://mxddjewxppkwhlkvejtx.supabase.co";
-const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInJlZiI6Im14ZGRqZXd4cHBrd2hsa3ZlanR4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEwMTk3NTQsImV4cCI6MjA5NjU5NTc1NH0.SBojidbDLTlcMi04BDGJlcsuq_V2kpXC0uN8Lcufwic";
+const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im14ZGRqZXd4cHBrd2hsa3ZlanR4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEwMTk3NTQsImV4cCI6MjA5NjU5NTc1NH0.SBojidbDLTlcMi04BDGJlcsuq_V2kpXC0uN8Lcufwic";
 const APIFY_ACTOR = "shahidirfan~noon-com-scraper";
 
 // ===================== SUPABASE CLIENT =====================
@@ -40,7 +40,7 @@ const db = {
 // ===================== UTILS =====================
 const extractSKU = (url) => {
   if (!url) return null;
-  const m = url.match(/\/([NZ][A-Z0-9]{10,})\//i);
+  const m = url.match(/\/([NZ][A-Z0-9]{5,})\//i);
   return m ? m[1].toUpperCase() : null;
 };
 const buildEgyptUrl = (sku) => sku ? `https://www.noon.com/egypt-en/${sku}/p/` : null;
@@ -138,7 +138,7 @@ const ScrapeUrlModal = ({ onClose, onDone, userName }) => {
           const cost = uaePrice > 0 ? calcCost(uaePrice, aedRate, 0) : null;
           const sellingPrice = cost ? calcSelling(cost) : null;
           return {
-            id: `${sku || Math.random().toString(36).slice(2)}_${Date.now()}_${Math.random().toString(36).slice(2,5)}`,
+            id: sku,
             sku: sku || null,
             sku_type: skuType(sku),
             title: item.title || "",
@@ -159,7 +159,7 @@ const ScrapeUrlModal = ({ onClose, onDone, userName }) => {
             price_changed_at: null,
           };
         })
-        .filter(p => p.sku);
+        .filter(p => p.sku && p.sku.length >= 5);
 
       log(`⬆️ بيرفع ${products.length} منتج على Supabase...`);
       await db.upsertProducts(products);
