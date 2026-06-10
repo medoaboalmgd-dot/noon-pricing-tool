@@ -163,24 +163,53 @@ const SkuImportModal = ({ onClose, onDone, userName, products }) => {
     return cleaned;
   };
 
-  const handleFile = (e) => {
+  const handleFile = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
     setFileName(file.name);
-    const reader = new FileReader();
-    reader.onload = (evt) => {
-      const text = evt.target.result;
-      const lines = text.split(/[\r\n]+/).map(l => l.trim()).filter(Boolean);
-      const parsed = [];
-      for (const line of lines) {
-        const parts = line.split(/[,\t]/);
-        for (const part of parts) {
-          const sku = cleanSKU(part);
-          if (sku && !parsed.includes(sku)) parsed.push(sku);
-        }
+    const isExcel = file.name.endsWith('.xlsx') || file.name.endsWith('.xls');
+    if (isExcel) {
+      if (!window.XLSX) {
+        await new Promise((resolve, reject) => {
+          const script = document.createElement('script');
+          script.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+          script.onload = resolve; script.onerror = reject;
+          document.head.appendChild(script);
+        });
       }
-      setSkus(parsed);
-    };
+      const reader = new FileReader();
+      reader.onload = (evt) => {
+        const wb = window.XLSX.read(evt.target.result, { type: 'array' });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const rows = window.XLSX.utils.sheet_to_json(ws, { header: 1 });
+        const parsed = [];
+        for (const row of rows) {
+          for (const cell of row) {
+            const sku = cleanSKU(String(cell || ''));
+            if (sku && !parsed.includes(sku)) parsed.push(sku);
+          }
+        }
+        setSkus(parsed);
+      };
+      reader.readAsArrayBuffer(file);
+    } else {
+      const reader = new FileReader();
+      reader.onload = (evt) => {
+        const text = evt.target.result;
+        const lines = text.split(/[\r\n]+/).map(l => l.trim()).filter(Boolean);
+        const parsed = [];
+        for (const line of lines) {
+          const parts = line.split(/[,\t]/);
+          for (const part of parts) {
+            const sku = cleanSKU(part);
+            if (sku && !parsed.includes(sku)) parsed.push(sku);
+          }
+        }
+        setSkus(parsed);
+      };
+      reader.readAsText(file);
+    }
+  };
     reader.readAsText(file);
   };
 
