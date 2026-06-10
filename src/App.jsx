@@ -43,7 +43,12 @@ const extractSKU = (url) => {
   const m = url.match(/\/([NZ][A-Z0-9]{5,})\//i);
   return m ? m[1].toUpperCase() : null;
 };
-const buildEgyptUrl = (sku) => sku ? `https://www.noon.com/egypt-en/${sku}/p/` : null;
+const buildEgyptUrl = (sku, uaeUrl) => {
+  if (uaeUrl) {
+    return uaeUrl.replace("noon.com/uae-en/", "noon.com/egypt-en/").split("?")[0];
+  }
+  return sku ? `https://www.noon.com/egypt-en/${sku}/p/` : null;
+};
 const skuType = (sku) => !sku ? "?" : sku.startsWith("N") ? "N" : sku.startsWith("Z") ? "Z" : "?";
 const calcCost = (price, aedRate, shipping) => parseFloat(price) * parseFloat(aedRate) + parseFloat(shipping || 0);
 const calcSelling = (cost) => cost * 1.6;
@@ -133,7 +138,7 @@ const ScrapeUrlModal = ({ onClose, onDone, userName }) => {
         .filter(item => item.url || item.sku)
         .map(item => {
           const sku = (item.sku || extractSKU(item.url) || "").toUpperCase();
-          const egUrl = buildEgyptUrl(sku);
+          const egUrl = buildEgyptUrl(sku, item.url);
           const uaePrice = parseFloat(item.currentPrice || 0);
           const cost = uaePrice > 0 ? calcCost(uaePrice, aedRate, 0) : null;
           const sellingPrice = cost ? calcSelling(cost) : null;
