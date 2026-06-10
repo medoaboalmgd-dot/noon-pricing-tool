@@ -73,6 +73,124 @@ const apifyRun = async (actorId, input, token) => {
   return res.json();
 };
 
+
+// ===================== SKU IMPORT MODAL =====================
+const SkuImportModal = ({ onClose, onDone, userName, products }) => {
+  const [skus, setSkus] = useState([]);
+  const [fileName, setFileName] = useState("");
+  const [logs, setLogs] = useState([]);
+  const [progress, setProgress] = useState(0);
+  const [running, setRunning] = useState(false);
+  const [done, setDone] = useState(false);
+
+  const log = (msg, type = "info") => setLogs(l => [...l, { msg, type, time: new Date().toLocaleTimeString("ar-EG") }]);
+
+  const cleanSKU = (raw) => {
+    if (!raw) return null;
+    const cleaned = raw.toString().trim().replace(/-\d+$/, "").toUpperCase();
+    if (!/^[NZ]/i.test(cleaned)) return null;
+    return cleaned;
+  };
+
+  const handleFile = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setFileName(file.name);
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      const text = evt.target.result;
+      const lines = text.split(/[\r\n]+/).map(l => l.trim()).filter(Boolean);
+      const parsed = [];
+      for (const line of lines) {
+        const parts = line.split(/[,\t]/);
+        for (const part of parts) {
+          const sku = cleanSKU(part);
+          if (sku && !parsed.includes(sku)) parsed.push(sku);
+        }
+      }
+      setSkus(parsed);
+    };
+    reader.readAsText(file);
+  };
+
+  const run = async () => {
+    if (skus.length === 0) { alert("مفيش SKUs"); return; }
+    const token = localStorage.getItem(`apify_token_${userName}`);
+    if (!token) { alert("سجل الـ API Token في الإعدادات"); return; }
+    setRunning(true);
+    log(`📋 إجمالي SKUs: ${skus.length}`);
+    const aedSetting = await db.getSetting("aed_rate");
+    const aedRate = aedSetting?.rate || 13.6;
+    const existingSkus = new Set(products.map(p => p.sku?.toUpperCase()));
+    const allProducts = [];
+    for (let i = 0; i < skus.length; i++) {
+      const sku = skus[i];
+      setProgress(Math.round(((i + 1) / skus.length) * 100));
+      try {
+        const url = `https://www.noon.com/uae-en/${sku}/p/`;
+        const items = await apifyRun(APIFY_UAE, { startUrl: url, maxProducts: 1, maxPages: 1 }, token);
+        if (items.length > 0) {
+          const item = items[0];
+          const realSku = extractSKU(item.url) || sku;
+          const egUrl = buildEgyptUrl(realSku, item.url);
+          const uaePrice = parseFloat(item.currentPrice || 0);
+          const cost = uaePrice > 0 ? calcCost(uaePrice, aedRate, 0) : null;
+          allProducts.push({ id: realSku, sku: realSku, sku_type: skuType(realSku), title: item.title || "", brand: item.brand || "", image: item.image || "", uae_url: item.url || url, egypt_url: egUrl, uae_price: uaePrice || null, noon_eg_price: null, prev_noon_eg_price: null, is_available: null, shipping: 0, cost, selling_price: cost ? calcSelling(cost) : null, sellers: null, rating: null, review_count: null, buy_box_seller: null, i_have_buy_box: false, i_am_seller: false, my_price: null, added_date: today(), added_by: userName, last_updated: today(), price_changed_at: null, last_uae_scrape: new Date().toISOString() });
+          log(`  ✅ [${i+1}/${skus.length}] ${realSku} — ${item.title?.slice(0,30) || ""}`, "success");
+        } else {
+          log(`  ⚠️ [${i+1}/${skus.length}] ${sku} — مش لاقيه على نون UAE`);
+          allProducts.push({ id: sku, sku, sku_type: skuType(sku), title: `غير موجود: ${sku}`, brand: "", image: "", uae_url: "", egypt_url: null, uae_price: null, noon_eg_price: null, prev_noon_eg_price: null, is_available: null, shipping: 0, cost: null, selling_price: null, sellers: null, rating: null, review_count: null, buy_box_seller: null, i_have_buy_box: false, i_am_seller: false, my_price: null, added_date: today(), added_by: userName, last_updated: today(), price_changed_at: null, last_uae_scrape: new Date().toISOString(), not_found_uae: true, not_found_eg: false });
+        }
+      } catch(e) { log(`  ❌ ${sku} — ${e.message}`, "error"); }
+    }
+    const toAdd = allProducts.filter(p => !existingSkus.has(p.sku?.toUpperCase()));
+    const toUpdate = allProducts.filter(p => existingSkus.has(p.sku?.toUpperCase()));
+    if (toAdd.length > 0) await db.upsertProducts(toAdd);
+    for (const p of toUpdate) await db.updateProduct(p.id, { uae_price: p.uae_price, cost: p.cost, selling_price: p.selling_price, last_uae_scrape: p.last_uae_scrape });
+    setProgress(100);
+    log(`🎉 أضاف ${toAdd.length} جديد — حدّث ${toUpdate.length} موجود`, "success");
+    setDone(true); setRunning(false); onDone();
+  };
+
+  return (
+    <div style={S.overlay}>
+      <div style={{ ...S.modal, maxWidth: 560 }}>
+        <div style={S.modalHead}>
+          <span style={S.modalTitle}>📋 استيراد SKUs من Excel</span>
+          <button onClick={onClose} style={S.closeBtn}>✖</button>
+        </div>
+        {!running && !done && (
+          <div style={S.card}>
+            <label style={S.label}>📁 ارفع ملف Excel أو CSV أو TXT</label>
+            <input type="file" accept=".xlsx,.xls,.csv,.txt" onChange={handleFile} style={{ marginBottom: 8 }} />
+            {fileName && <p style={{ fontSize: 12, color: "#059669" }}>✅ {fileName}</p>}
+            {skus.length > 0 && (
+              <div style={{ marginTop: 8 }}>
+                <p style={{ fontSize: 12, color: "#6366f1", fontWeight: 600 }}>📦 لقى {skus.length} SKU</p>
+                <div style={{ background: "#0f172a", borderRadius: 6, padding: 8, maxHeight: 80, overflowY: "auto", fontFamily: "monospace", fontSize: 11, color: "#94a3b8", marginTop: 6 }}>
+                  {skus.slice(0,15).join(" | ")}{skus.length > 15 ? ` ... +${skus.length - 15}` : ""}
+                </div>
+              </div>
+            )}
+            <p style={{ ...S.hint, marginTop: 8, background: "#fffbeb", padding: 8, borderRadius: 6, color: "#92400e" }}>⚠️ كل SKU بياخد 15-30 ثانية — {skus.length} SKU هياخد تقريباً {Math.round(skus.length * 20 / 60)} دقيقة</p>
+          </div>
+        )}
+        {(running || done) && (
+          <>
+            <div style={S.progWrap}><div style={{ ...S.progBar, width: `${progress}%` }} /></div>
+            <div style={{ textAlign: "center", color: "#6366f1", fontWeight: 700, marginBottom: 8 }}>{progress}%</div>
+            <div style={S.logBox}>{logs.map((l,i) => <div key={i} style={{ display:"flex", gap:8, marginBottom:3 }}><span style={{ color:"#475569", fontSize:10, minWidth:55 }}>{l.time}</span><span style={{ fontSize:12, color: l.type==="error" ? "#f87171" : l.type==="success" ? "#4ade80" : "#94a3b8" }}>{l.msg}</span></div>)}</div>
+          </>
+        )}
+        <div style={{ display:"flex", gap:8, justifyContent:"flex-end", marginTop:14 }}>
+          {!running && <button onClick={onClose} style={S.btnGhost}>{done ? "إغلاق" : "إلغاء"}</button>}
+          {!running && !done && skus.length > 0 && <button onClick={run} style={{ ...S.btnPrimary, background:"#0891b2" }}>🚀 ابدأ ({skus.length} SKU)</button>}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // ===================== SCRAPE UAE MODAL =====================
 const ScrapeUrlModal = ({ onClose, onDone, userName, products }) => {
   const [url, setUrl] = useState("");
@@ -278,8 +396,8 @@ const ScrapeEgyptModal = ({ onClose, products, onDone, userName }) => {
         const foundSkus = new Set(items.map(x => x.sku?.toUpperCase()));
         for (const p of batch) {
           if (!foundSkus.has(p.sku?.toUpperCase())) {
-            await db.updateProduct(p.id, { is_available: false, last_updated: today() });
-            log(`  ⚠️ ${p.sku} — مش موجود`);
+            await db.updateProduct(p.id, { is_available: false, not_found_eg: true, last_updated: today() });
+            log(`  ⚠️ ${p.sku} — مش موجود على نون مصر`);
           }
         }
       } catch (e) {
@@ -457,7 +575,7 @@ const ProductRow = ({ p, aedRate, onShipChange, onDelete }) => {
 
   return (
     <>
-      <tr style={{ ...S.tr, background: isLoser ? "#fff5f5" : cheaperExists ? "#fffbeb" : "white" }}>
+      <tr style={{ ...S.tr, background: isLoser ? "#fff5f5" : cheaperExists ? "#fffbeb" : (p.not_found_uae || p.not_found_eg) ? "#f5f3ff" : "white" }}>
         <td style={S.td}>
           {p.image ? <img src={p.image} alt="" style={S.thumb} onError={e => e.target.style.display = "none"} />
             : <div style={S.noThumb}>📦</div>}
@@ -468,6 +586,8 @@ const ProductRow = ({ p, aedRate, onShipChange, onDelete }) => {
             <span style={{ ...S.badge, background: p.sku_type === "N" ? "#d1fae5" : "#dbeafe", color: p.sku_type === "N" ? "#065f46" : "#1e40af" }}>{p.sku_type}</span>
             <span style={{ ...S.badge, background: "#f1f5f9", color: "#475569" }}>{p.sku}</span>
             {p.brand && <span style={{ ...S.badge, background: "#fef3c7", color: "#92400e" }}>{p.brand}</span>}
+            {p.not_found_uae && <span style={{ ...S.badge, background: "#ede9fe", color: "#7c3aed" }}>❓ UAE</span>}
+            {p.not_found_eg && <span style={{ ...S.badge, background: "#ede9fe", color: "#7c3aed" }}>❓ مصر</span>}
             {p.rating && <span style={{ ...S.badge, background: "#fef9c3", color: "#713f12" }}>⭐ {p.rating} ({p.review_count})</span>}
           </div>
         </td>
@@ -552,6 +672,7 @@ export default function App() {
   const [userName, setUserName] = useState(localStorage.getItem("noon_username") || "");
   const [loading, setLoading] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
+  const [showSkuImport, setShowSkuImport] = useState(false);
   const [showScrapeUrl, setShowScrapeUrl] = useState(false);
   const [showScrapeEgypt, setShowScrapeEgypt] = useState(false);
   const [showDash, setShowDash] = useState(true);
@@ -615,6 +736,7 @@ export default function App() {
     if (activeTab === "Z" && p.sku_type !== "Z") return false;
     if (activeTab === "losers" && !(p.noon_eg_price != null && p.selling_price && parseFloat(p.noon_eg_price) < parseFloat(p.selling_price))) return false;
     if (activeTab === "changed" && !(p.prev_noon_eg_price != null && p.prev_noon_eg_price !== p.noon_eg_price)) return false;
+    if (activeTab === "not_found" && !(p.not_found_uae || p.not_found_eg)) return false;
     if (activeTab === "not_selling" && !(p.noon_eg_price != null && !p.i_am_seller)) return false;
     if (activeTab === "cheaper_exists" && !(p.i_am_seller && !p.i_have_buy_box)) return false;
     if (activeTab === "buybox" && !p.i_have_buy_box) return false;
@@ -635,6 +757,7 @@ export default function App() {
     not_selling: products.filter(p => p.noon_eg_price != null && !p.i_am_seller).length,
     losers: products.filter(p => p.noon_eg_price != null && p.selling_price && parseFloat(p.noon_eg_price) < parseFloat(p.selling_price)).length,
     changed: products.filter(p => p.prev_noon_eg_price != null && p.prev_noon_eg_price !== p.noon_eg_price).length,
+    not_found: products.filter(p => p.not_found_uae || p.not_found_eg).length,
   };
 
   return (
@@ -653,7 +776,8 @@ export default function App() {
       </header>
 
       <div style={S.actions}>
-        <button onClick={() => setShowScrapeUrl(true)} style={{ ...S.btnPrimary, background: "#7c3aed" }}>🔍 سكراب منتجات جديدة</button>
+        <button onClick={() => setShowScrapeUrl(true)} style={{ ...S.btnPrimary, background: "#7c3aed" }}>🔍 سكراب كاتيجوري</button>
+        <button onClick={() => setShowSkuImport(true)} style={{ ...S.btnPrimary, background: "#0891b2" }}>📋 استيراد SKUs</button>
         <button onClick={() => setShowScrapeEgypt(true)} style={{ ...S.btnPrimary, background: "#059669" }}>🇪🇬 تحديث أسعار نون مصر</button>
         <button onClick={() => exportCSV(filtered)} style={S.btnGhost}>💾 تصدير CSV</button>
         <button onClick={() => setShowDash(!showDash)} style={S.btnGhost}>{showDash ? "إخفاء الداشبورد" : "📊 إظهار الداشبورد"}</button>
@@ -691,6 +815,7 @@ export default function App() {
           ["not_selling", `🚫 مش عارضها (${tc.not_selling})`],
           ["losers", `🔴 خاسرة (${tc.losers})`],
           ["changed", `📉 تغير سعرها (${tc.changed})`],
+          ["not_found", `❓ مش موجود (${tc.not_found})`],
         ].map(([id, lbl]) => (
           <button key={id} onClick={() => setActiveTab(id)} style={{ ...S.tab, ...(activeTab === id ? S.tabOn : {}) }}>{lbl}</button>
         ))}
@@ -727,6 +852,7 @@ export default function App() {
       {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} userName={userName} setUserName={setUserName} aedRate={aedRate} setAedRate={setAedRate} />}
       {showScrapeUrl && <ScrapeUrlModal onClose={() => setShowScrapeUrl(false)} onDone={loadData} userName={userName} products={products} />}
       {showScrapeEgypt && <ScrapeEgyptModal onClose={() => setShowScrapeEgypt(false)} products={products} onDone={loadData} userName={userName} />}
+      {showSkuImport && <SkuImportModal onClose={() => setShowSkuImport(false)} onDone={loadData} userName={userName} products={products} />}
     </div>
   );
 }
