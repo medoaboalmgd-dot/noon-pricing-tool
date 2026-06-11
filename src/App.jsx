@@ -7,6 +7,7 @@ const APIFY_UAE = "shahidirfan~noon-com-scraper";
 const APIFY_EG = "getdataforme~noon-product-spider";
 const MY_ACCOUNT = "BESTQUALITYBESTPRICE";
 const UAE_COOLDOWN_HOURS = 73;
+const EG_COOLDOWN_HOURS = 24;
 const PAGE_SIZE = 50;
 
 // ===================== SUPABASE =====================
@@ -445,7 +446,9 @@ const ScrapeEgyptModal = ({ onClose, products, onDone, userName }) => {
     const token = localStorage.getItem(`apify_token_${userName}`);
     if (!token) { alert("سجل الـ Apify API Token في الإعدادات أولاً"); return; }
     setRunning(true);
-    const toScrape = products.filter(p => p.egypt_url);
+    const toScrape = products.filter(p => p.egypt_url && hoursAgo(p.last_eg_scrape) >= EG_COOLDOWN_HOURS);
+    const skippedEg = products.filter(p => p.egypt_url && hoursAgo(p.last_eg_scrape) < EG_COOLDOWN_HOURS).length;
+    if (skippedEg > 0) log(`⏭️ متخطي (اتسكرب آخر ${EG_COOLDOWN_HOURS} ساعة): ${skippedEg} منتج`);
     log(`🚀 بدأ السكراب — ${toScrape.length} منتج`);
     const aedSetting = await db.getSetting("aed_rate");
     const aedRate = aedSetting?.rate || 13.6;
@@ -512,7 +515,7 @@ const ScrapeEgyptModal = ({ onClose, products, onDone, userName }) => {
             my_price: myPrice,
             not_found_eg: false,
             price_history: history,
-            cost, selling_price, last_updated: today(),
+            cost, selling_price, last_updated: today(), last_eg_scrape: new Date().toISOString(),
           });
           log(`  ✅ ${p.sku} — ${newPrice} ج.م ${iHaveBuyBox ? "🏆" : ""}`, "success");
         }
