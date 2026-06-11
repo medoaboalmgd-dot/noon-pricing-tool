@@ -28,7 +28,21 @@ const sb = async (path, opts = {}) => {
 };
 
 const db = {
-  getProducts: () => sb("products?order=created_at.desc&select=*", { headers: { "Range": "0-9999", "Prefer": "count=none" } }),
+  getProducts: async () => {
+    const pageSize = 1000;
+    let all = [];
+    let from = 0;
+    while (true) {
+      const page = await sb(`products?order=created_at.desc&select=*`, {
+        headers: { "Range": `${from}-${from + pageSize - 1}`, "Range-Unit": "items" }
+      });
+      if (!page || page.length === 0) break;
+      all = [...all, ...page];
+      if (page.length < pageSize) break;
+      from += pageSize;
+    }
+    return all;
+  },
   upsertProducts: (arr) => sb("products", { method: "POST", prefer: "resolution=merge-duplicates,return=representation", body: JSON.stringify(arr) }),
   updateProduct: (id, data) => sb(`products?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(data) }),
   deleteProduct: (id) => sb(`products?id=eq.${id}`, { method: "DELETE", prefer: "return=minimal" }),
