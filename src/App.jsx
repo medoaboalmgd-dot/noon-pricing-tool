@@ -106,26 +106,33 @@ const sendTelegram = async (text) => {
 };
 
 // ===================== APIFY =====================
-const apifyRun = async (actorId, input, token) => {
-  const runRes = await fetch(`https://api.apify.com/v2/acts/${actorId}/runs`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    body: JSON.stringify(input),
-  });
-  if (!runRes.ok) throw new Error(`Actor run failed: ${runRes.status}`);
-  const runData = await runRes.json();
-  const runId = runData.data?.id;
-  const datasetId = runData.data?.defaultDatasetId;
-  for (let a = 0; a < 40; a++) {
-    await new Promise(r => setTimeout(r, 4000));
-    const st = await fetch(`https://api.apify.com/v2/actor-runs/${runId}`, { headers: { Authorization: `Bearer ${token}` } });
-    const stData = await st.json();
-    const status = stData.data?.status;
-    if (status === "SUCCEEDED") break;
-    if (status === "FAILED" || status === "ABORTED") throw new Error(`Run ${status}`);
+const apifyRun = async (actorId, input, token, retries = 3) => {
+  for (let attempt = 0; attempt < retries; attempt++) {
+    try {
+      if (attempt > 0) await new Promise(r => setTimeout(r, 5000 * attempt));
+      const runRes = await fetch(`https://api.apify.com/v2/acts/${actorId}/runs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify(input),
+      });
+      if (!runRes.ok) throw new Error(`Actor run failed: ${runRes.status}`);
+      const runData = await runRes.json();
+      const runId = runData.data?.id;
+      const datasetId = runData.data?.defaultDatasetId;
+      for (let a = 0; a < 40; a++) {
+        await new Promise(r => setTimeout(r, 4000));
+        const st = await fetch(`https://api.apify.com/v2/actor-runs/${runId}`, { headers: { Authorization: `Bearer ${token}` } });
+        const stData = await st.json();
+        const status = stData.data?.status;
+        if (status === "SUCCEEDED") break;
+        if (status === "FAILED" || status === "ABORTED") throw new Error(`Run ${status}`);
+      }
+      const res = await fetch(`https://api.apify.com/v2/datasets/${datasetId}/items?limit=1000`, { headers: { Authorization: `Bearer ${token}` } });
+      return res.json();
+    } catch (e) {
+      if (attempt === retries - 1) throw e;
+    }
   }
-  const res = await fetch(`https://api.apify.com/v2/datasets/${datasetId}/items?limit=1000`, { headers: { Authorization: `Bearer ${token}` } });
-  return res.json();
 };
 
 // ===================== LOGIN GATE =====================
@@ -490,7 +497,7 @@ const ScrapeEgyptModal = ({ onClose, products, onDone, userName }) => {
     log(`🚀 بدأ السكراب — ${toScrape.length} منتج`);
     const aedSetting = await db.getSetting("aed_rate");
     const aedRate = aedSetting?.rate || 13.6;
-    const batchSize = 10;
+    const batchSize = 5;
     const alerts = [];
 
     for (let i = 0; i < toScrape.length; i += batchSize) {
