@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 const SUPABASE_URL = "https://mxddjewxppkwhlkvejtx.supabase.co";
 const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im14ZGRqZXd4cHBrd2hsa3ZlanR4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEwMTk3NTQsImV4cCI6MjA5NjU5NTc1NH0.SBojidbDLTlcMi04BDGJlcsuq_V2kpXC0uN8Lcufwic";
 const APIFY_UAE = "shahidirfan~noon-com-scraper";
-const APIFY_EG = "getdataforme~noon-product-spider";
+const APIFY_EG = "saswave~noon-seller-monitoring";
 const MY_ACCOUNT = "BESTQUALITYBESTPRICE";
 const UAE_COOLDOWN_HOURS = 73;
 const EG_COOLDOWN_HOURS = 24;
@@ -44,9 +44,45 @@ const buildEgyptUrl = (sku, uaeUrl) => {
 };
 const skuType = (sku) => !sku ? "?" : sku.startsWith("N") ? "N" : sku.startsWith("Z") ? "Z" : "?";
 const calcCost = (price, aedRate, shipping) => parseFloat(price) * parseFloat(aedRate) + parseFloat(shipping || 0);
-const calcSelling = (cost) => cost * 1.6;
+
+const roundPrice = (price) => {
+  if (!price || price <= 0) return price;
+  const candidates = [];
+  const base = Math.floor(price / 100) * 100;
+  for (let i = -1; i <= 2; i++) {
+    candidates.push(base + i * 100 + 49);
+    candidates.push(base + i * 100 + 99);
+  }
+  let best = candidates[0];
+  let bestDiff = Math.abs(price - candidates[0]);
+  for (const c of candidates) {
+    const diff = Math.abs(price - c);
+    if (diff < bestDiff) { bestDiff = diff; best = c; }
+  }
+  return best;
+};
+const calcSelling = (cost) => roundPrice(cost * 1.6);
 const calcMargin = (sell, cost) => cost > 0 ? (((sell - cost) / sell) * 100).toFixed(1) : 0;
 const calcNetProfit = (sell, cost, commissionPct) => sell * (1 - commissionPct / 100) - cost;
+
+const roundPrice = (price) => {
+  if (!price || price <= 0) return price;
+  const candidates = [];
+  const base = Math.floor(price / 100) * 100;
+  // Generate candidates: x49 and x99 around the price
+  for (let i = -1; i <= 2; i++) {
+    candidates.push(base + i * 100 + 49);
+    candidates.push(base + i * 100 + 99);
+  }
+  // Find closest
+  let best = candidates[0];
+  let bestDiff = Math.abs(price - candidates[0]);
+  for (const c of candidates) {
+    const diff = Math.abs(price - c);
+    if (diff < bestDiff) { bestDiff = diff; best = c; }
+  }
+  return best;
+};
 const fmtEGP = (n) => n != null ? `${Math.round(n).toLocaleString("ar-EG")} ج.م` : "—";
 const fmtAED = (n) => n != null ? `${parseFloat(n).toFixed(2)} د.إ` : "—";
 const today = () => new Date().toISOString().split("T")[0];
@@ -460,15 +496,34 @@ const ScrapeEgyptModal = ({ onClose, products, onDone, userName }) => {
       setProgress(Math.round(((i + batch.length) / toScrape.length) * 100));
       log(`📦 batch [${i + 1}–${i + batch.length}] من ${toScrape.length}`);
       try {
-        const items = await apifyRun(APIFY_EG, { Urls: batch.map(p => p.egypt_url), proxyConfiguration: { useApifyProxy: true, apifyProxyGroups: ["RESIDENTIAL"] } }, token);
+        const items = await apifyRun(APIFY_EG, {
+          asins: batch.map(p => p.sku).filter(Boolean),
+          noon_domain: "www.noon.com/egypt-en",
+          use_apify_dataset: true
+        }, token);
         log(`  ✅ جاب ${items.length} نتيجة`);
 
+        const processedSkus = new Set();
         for (const item of items) {
-          const itemSku = item.sku?.toUpperCase();
+          const itemSku = (item.sku_config || item.sku)?.toUpperCase();
           const p = batch.find(x => x.sku?.toUpperCase() === itemSku);
           if (!p) continue;
+          // Skip duplicate SKUs already processed
+          if (processedSkus.has(itemSku)) continue;
+          processedSkus.add(itemSku);
 
-          const offers = item.offers || [];
+          // saswave actor: each item is one seller offer
+          // Group all items by SKU to get all sellers
+          const skuItems = items.filter(x => x.sku_config?.toUpperCase() === itemSku);
+          const sortedOffers = [...skuItems].sort((a, b) => (a.position || 99) - (b.position || 99));
+          const offers = sortedOffers.map(o => ({
+            seller: o.store_name || "",
+            price: String(o.sale_price || o.price || ""),
+            availability: o.is_buyable ? "https://schema.org/InStock" : "",
+            rating: o.partner_ratings_sellerlab?.partner_rating || null,
+            num_ratings: o.partner_ratings_sellerlab?.num_of_rating || null,
+            position: o.position || 99,
+          }));
           const lowestPrice = offers.length > 0 ? Math.min(...offers.map(o => parseFloat(o.price || 999999))) : null;
           const buyBoxOffer = offers[0];
           const buyBoxSeller = buyBoxOffer?.seller || null;
@@ -520,7 +575,7 @@ const ScrapeEgyptModal = ({ onClose, products, onDone, userName }) => {
           log(`  ✅ ${p.sku} — ${newPrice} ج.م ${iHaveBuyBox ? "🏆" : ""}`, "success");
         }
 
-        const foundSkus = new Set(items.map(x => x.sku?.toUpperCase()));
+        const foundSkus = new Set(items.map(x => (x.sku_config || x.sku)?.toUpperCase()));
         for (const p of batch) {
           if (!foundSkus.has(p.sku?.toUpperCase())) {
             await db.updateProduct(p.id, { is_available: false, not_found_eg: true, last_updated: today() });
@@ -902,6 +957,122 @@ const ProductRow = ({ p, aedRate, commission, onShipChange, onDelete }) => {
   );
 };
 
+
+// ===================== SELLERS PAGE =====================
+const SellersPage = ({ products, onBack }) => {
+  const [selectedSeller, setSelectedSeller] = useState(null);
+
+  // Build sellers map
+  const sellersMap = {};
+  for (const p of products) {
+    if (!Array.isArray(p.sellers)) continue;
+    for (const s of p.sellers) {
+      const name = s.seller || "";
+      if (!name) continue;
+      const isMe = normalizeSellerName(name) === normalizeSellerName(MY_ACCOUNT);
+      if (isMe) continue; // skip own account
+      if (!sellersMap[name]) {
+        sellersMap[name] = {
+          name,
+          rating: s.rating || null,
+          num_ratings: s.num_ratings || null,
+          products: [],
+        };
+      }
+      sellersMap[name].products.push(p);
+    }
+  }
+
+  const sellers = Object.values(sellersMap).sort((a, b) => b.products.length - a.products.length);
+
+  if (selectedSeller) {
+    const sel = sellersMap[selectedSeller];
+    return (
+      <div style={S.app} dir="rtl">
+        <div style={{ ...S.actions, alignItems: "center" }}>
+          <button onClick={() => setSelectedSeller(null)} style={S.btnGhost}>← رجوع للبائعين</button>
+          <strong style={{ fontSize: 15 }}>🏪 {selectedSeller}</strong>
+          {sel?.rating && <span style={{ ...S.badge, background: "#fef9c3", color: "#713f12", fontSize: 13 }}>⭐ {sel.rating} ({sel.num_ratings})</span>}
+          <span style={{ color: "#64748b", fontSize: 13 }}>{sel?.products.length} منتج مشترك</span>
+        </div>
+        <div style={S.tableWrap}>
+          <table style={S.table}>
+            <thead>
+              <tr style={{ background: "#f8fafc" }}>
+                {["صورة", "المنتج", "SKU", "سعر UAE", "سعر مصر", "سعره", "الفرق"].map(h => <th key={h} style={S.th}>{h}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {sel?.products.map(p => {
+                const sellerOffer = p.sellers?.find(s => normalizeSellerName(s.seller) === normalizeSellerName(selectedSeller));
+                const sellerPrice = sellerOffer ? parseFloat(sellerOffer.price) : null;
+                const myOffer = p.sellers?.find(s => normalizeSellerName(s.seller) === normalizeSellerName(MY_ACCOUNT));
+                const myPrice = myOffer ? parseFloat(myOffer.price) : null;
+                const diff = myPrice && sellerPrice ? myPrice - sellerPrice : null;
+                return (
+                  <tr key={p.id} style={S.tr}>
+                    <td style={S.td}>{p.image ? <img src={p.image} alt="" style={S.thumb} onError={e => e.target.style.display="none"} /> : <div style={S.noThumb}>📦</div>}</td>
+                    <td style={{ ...S.td, maxWidth: 220 }}><div style={S.prodTitle}>{p.title || "—"}</div></td>
+                    <td style={S.td}><span style={{ ...S.badge, background: "#f1f5f9", color: "#475569" }}>{p.sku}</span></td>
+                    <td style={{ ...S.td, textAlign: "center" }}>{fmtAED(p.uae_price)}</td>
+                    <td style={{ ...S.td, textAlign: "center" }}>{fmtEGP(p.noon_eg_price)}</td>
+                    <td style={{ ...S.td, textAlign: "center" }}>{sellerPrice ? <strong style={{ color: "#ef4444" }}>{fmtEGP(sellerPrice)}</strong> : "—"}</td>
+                    <td style={{ ...S.td, textAlign: "center" }}>
+                      {diff != null ? (
+                        <span style={{ color: diff > 0 ? "#059669" : "#ef4444", fontWeight: 600 }}>
+                          {diff > 0 ? "+" : ""}{fmtEGP(diff)}
+                        </span>
+                      ) : "—"}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={S.app} dir="rtl">
+      <div style={{ ...S.actions, alignItems: "center" }}>
+        <button onClick={onBack} style={S.btnGhost}>← رجوع</button>
+        <strong style={{ fontSize: 15 }}>🏪 البائعين المنافسين ({sellers.length})</strong>
+      </div>
+      <div style={S.tableWrap}>
+        {sellers.length === 0 ? (
+          <div style={S.empty}>مفيش بائعين منافسين — اعمل سكراب نون مصر الأول</div>
+        ) : (
+          <table style={S.table}>
+            <thead>
+              <tr style={{ background: "#f8fafc" }}>
+                {["البائع", "تقييم", "منتجات مشتركة", ""].map(h => <th key={h} style={S.th}>{h}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {sellers.map((s, i) => (
+                <tr key={i} style={S.tr}>
+                  <td style={S.td}><strong>{s.name}</strong></td>
+                  <td style={{ ...S.td, textAlign: "center" }}>
+                    {s.rating ? <span style={{ ...S.badge, background: "#fef9c3", color: "#713f12" }}>⭐ {s.rating} ({s.num_ratings || "—"})</span> : "—"}
+                  </td>
+                  <td style={{ ...S.td, textAlign: "center" }}>
+                    <span style={{ ...S.badge, background: "#dbeafe", color: "#1d4ed8", fontSize: 13 }}>{s.products.length} منتج</span>
+                  </td>
+                  <td style={{ ...S.td, textAlign: "center" }}>
+                    <button onClick={() => setSelectedSeller(s.name)} style={S.btnPrimary}>عرض المنتجات</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+};
+
 // ===================== MAIN APP =====================
 export default function App() {
   const [authed, setAuthed] = useState(localStorage.getItem("noon_access") === "ok");
@@ -910,6 +1081,7 @@ export default function App() {
   const [commission, setCommission] = useState(15);
   const [userName, setUserName] = useState(localStorage.getItem("noon_username") || "");
   const [loading, setLoading] = useState(true);
+  const [showSellers, setShowSellers] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showSkuImport, setShowSkuImport] = useState(false);
   const [showScrapeUrl, setShowScrapeUrl] = useState(false);
@@ -1017,6 +1189,7 @@ export default function App() {
 
   return (
     <div style={S.app} dir="rtl">
+      {showSellers ? <SellersPage products={products} onBack={() => setShowSellers(false)} /> : <>
       <header style={S.header}>
         <div style={S.hLeft}>
           <div style={S.logo}>🛒</div>
@@ -1036,6 +1209,7 @@ export default function App() {
         <button onClick={() => setShowSkuImport(true)} style={{ ...S.btnPrimary, background: "#0891b2" }}>📋 استيراد SKUs</button>
         <button onClick={() => setShowScrapeEgypt(true)} style={{ ...S.btnPrimary, background: "#059669" }}>🇪🇬 تحديث أسعار مصر</button>
         <button onClick={() => exportCSV(filtered)} style={S.btnGhost}>💾 تصدير CSV</button>
+        <button onClick={() => setShowSellers(true)} style={{ ...S.btnGhost, borderColor: "#8b5cf6", color: "#8b5cf6" }}>🏪 البائعين</button>
         <button onClick={() => setShowDash(!showDash)} style={S.btnGhost}>📊</button>
       </div>
 
@@ -1115,7 +1289,8 @@ export default function App() {
       {showScrapeUrl && <ScrapeUrlModal onClose={() => setShowScrapeUrl(false)} onDone={loadData} userName={userName} products={products} />}
       {showScrapeEgypt && <ScrapeEgyptModal onClose={() => setShowScrapeEgypt(false)} products={products} onDone={loadData} userName={userName} />}
       {showSkuImport && <SkuImportModal onClose={() => setShowSkuImport(false)} onDone={loadData} userName={userName} products={products} />}
-    </div>
+    </>
+    }</div>
   );
 }
 
