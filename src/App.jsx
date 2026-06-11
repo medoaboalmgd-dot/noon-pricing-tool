@@ -33,9 +33,16 @@ const db = {
     let all = [];
     let from = 0;
     while (true) {
-      const page = await sb(`products?order=created_at.desc&select=*`, {
-        headers: { "Range": `${from}-${from + pageSize - 1}`, "Range-Unit": "items" }
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/products?order=created_at.desc&select=*`, {
+        headers: {
+          apikey: SUPABASE_ANON,
+          Authorization: `Bearer ${SUPABASE_ANON}`,
+          "Range-Unit": "items",
+          "Range": `${from}-${from + pageSize - 1}`,
+        }
       });
+      if (!res.ok) break;
+      const page = await res.json();
       if (!page || page.length === 0) break;
       all = [...all, ...page];
       if (page.length < pageSize) break;
