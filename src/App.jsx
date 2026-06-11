@@ -273,6 +273,8 @@ const SkuImportModal = ({ onClose, onDone, userName, products }) => {
       const existing = productMap[sku];
       if (existing && hoursAgo(existing.last_uae_scrape) < UAE_COOLDOWN_HOURS) {
         skipped++;
+      } else if (sku.startsWith("Z") && existing?.i_am_seller) {
+        skipped++; // Skip Z products we sell in Egypt
       } else {
         toScrape.push(sku);
       }
@@ -414,7 +416,11 @@ const ScrapeUrlModal = ({ onClose, onDone, userName, products }) => {
 
       const toAdd = newProducts.filter(p => !productMap[p.sku?.toUpperCase()]);
       const toUpdateAll = newProducts.filter(p => productMap[p.sku?.toUpperCase()]);
-      const toUpdate = toUpdateAll.filter(p => hoursAgo(productMap[p.sku.toUpperCase()].last_uae_scrape) >= UAE_COOLDOWN_HOURS);
+      const toUpdate = toUpdateAll.filter(p => {
+        const existing = productMap[p.sku.toUpperCase()];
+        if (existing?.sku_type === "Z" && existing?.i_am_seller) return false; // Skip Z products we sell
+        return hoursAgo(existing?.last_uae_scrape) >= UAE_COOLDOWN_HOURS;
+      });
       const skipped = toUpdateAll.length - toUpdate.length;
 
       if (toAdd.length > 0) await db.upsertProducts(toAdd);
@@ -831,6 +837,7 @@ const Dashboard = ({ products, commission }) => {
   const losers = products.filter(p => p.noon_eg_price != null && p.selling_price && parseFloat(p.noon_eg_price) < parseFloat(p.selling_price)).length;
   const margins = products.filter(p => p.selling_price && p.cost).map(p => parseFloat(calcMargin(p.selling_price, p.cost)));
   const avgMargin = margins.length ? (margins.reduce((a, b) => a + b, 0) / margins.length).toFixed(1) : 0;
+  const sellingProducts = products.filter(p => p.i_am_seller).length;
   const iHaveBuyBox = products.filter(p => p.i_have_buy_box).length;
   const notSelling = products.filter(p => p.noon_eg_price != null && !p.i_am_seller).length;
   const cheaperExists = products.filter(p => p.i_am_seller && !p.i_have_buy_box).length;
@@ -839,6 +846,7 @@ const Dashboard = ({ products, commission }) => {
   const cards = [
     { v: total, lbl: "إجمالي المنتجات", icon: "📦", c: "#6366f1" },
     { v: iHaveBuyBox, lbl: "Buy Box عندك", icon: "🏆", c: "#f59e0b" },
+    { v: `${sellingProducts > 0 ? ((iHaveBuyBox / sellingProducts) * 100).toFixed(0) : 0}%`, lbl: "نسبة Buy Box", icon: "📊", c: "#6366f1" },
     { v: cheaperExists, lbl: "في أرخص منك", icon: "⚠️", c: "#ef4444" },
     { v: notSelling, lbl: "مش عارضها", icon: "🚫", c: "#8b5cf6" },
     { v: losers, lbl: "خاسرة", icon: "🔴", c: "#dc2626" },
@@ -968,6 +976,170 @@ const ProductRow = ({ p, aedRate, commission, onShipChange, onDelete }) => {
 };
 
 
+
+// ===================== BUYBOX REVIEW MODAL =====================
+const BuyBoxReviewModal = ({ onClose, products, onDone, userName }) => {
+  const [logs, setLogs] = useState([]);
+  const [progress, setProgress] = useState(0);
+  const [running, setRunning] = useState(false);
+  const [done, setDone] = useState(false);
+  const [stats, setStats] = useState(null);
+
+  const log = (msg, type = "info") => setLogs(l => [...l, { msg, type, time: new Date().toLocaleTimeString("ar-EG") }]);
+
+  // Only products where i_am_seller=true and i_have_buy_box=false
+  const toReview = products.filter(p => p.i_am_seller && !p.i_have_buy_box && p.egypt_url);
+  const sellingProducts = products.filter(p => p.i_am_seller);
+  const buyboxCount = products.filter(p => p.i_have_buy_box).length;
+  const buyboxPct = sellingProducts.length > 0 ? ((buyboxCount / sellingProducts.length) * 100).toFixed(1) : 0;
+
+  const run = async () => {
+    const token = localStorage.getItem(`apify_token_${userName}`);
+    if (!token) { alert("سجل الـ Apify API Token في الإعدادات أولاً"); return; }
+    setRunning(true);
+    log(`🔍 مراجعة ${toReview.length} منتج مش واخد فيها Buy Box`);
+    const aedSetting = await db.getSetting("aed_rate");
+    const aedRate = aedSetting?.rate || 13.6;
+    const batchSize = 10;
+    let lostBuyBox = 0;
+    let gainedBuyBox = 0;
+
+    for (let i = 0; i < toReview.length; i += batchSize) {
+      const batch = toReview.slice(i, i + batchSize);
+      setProgress(Math.round(((i + batch.length) / toReview.length) * 100));
+      log(`📦 batch [${i + 1}–${i + batch.length}] من ${toReview.length}`);
+      try {
+        const items = await apifyRun("saswave~noon-seller-monitoring", {
+          asins: batch.map(p => p.sku).filter(Boolean),
+          noon_domain: "www.noon.com/egypt-en",
+          use_apify_dataset: true
+        }, token);
+
+        const processedSkus = new Set();
+        for (const item of items) {
+          const itemSku = (item.sku_config || item.sku)?.toUpperCase();
+          const p = batch.find(x => x.sku?.toUpperCase() === itemSku);
+          if (!p || processedSkus.has(itemSku)) continue;
+          processedSkus.add(itemSku);
+
+          const skuItems = items.filter(x => (x.sku_config || x.sku)?.toUpperCase() === itemSku);
+          const sortedOffers = [...skuItems].sort((a, b) => (a.position || 99) - (b.position || 99));
+          const offers = sortedOffers.map(o => ({
+            seller: o.store_name || "",
+            price: String(o.sale_price || o.price || ""),
+            availability: o.is_buyable ? "https://schema.org/InStock" : "",
+            rating: o.partner_ratings_sellerlab?.partner_rating || null,
+            num_ratings: o.partner_ratings_sellerlab?.num_of_rating || null,
+            position: o.position || 99,
+          }));
+
+          const buyBoxSeller = offers[0]?.seller || null;
+          const iHaveBuyBox = normalizeSellerName(buyBoxSeller) === normalizeSellerName(MY_ACCOUNT);
+          const myOffer = offers.find(o => normalizeSellerName(o.seller) === normalizeSellerName(MY_ACCOUNT));
+          const myPrice = myOffer ? parseFloat(myOffer.price) : null;
+          const lowestPrice = offers.length > 0 ? Math.min(...offers.map(o => parseFloat(o.price || 999999))) : null;
+          const cost = p.uae_price > 0 ? (p.uae_price * aedRate) + (p.shipping || 0) : p.cost;
+          const selling_price = cost ? cost * 1.6 : p.selling_price;
+
+          if (iHaveBuyBox) gainedBuyBox++;
+
+          await db.updateProduct(p.id, {
+            noon_eg_price: lowestPrice,
+            sellers: offers,
+            buy_box_seller: buyBoxSeller,
+            i_have_buy_box: iHaveBuyBox,
+            my_price: myPrice,
+            cost, selling_price,
+            last_updated: today(),
+            last_eg_scrape: new Date().toISOString(),
+          });
+
+          log(`  ${iHaveBuyBox ? "🏆" : "❌"} ${p.sku} — Buy Box: ${buyBoxSeller || "؟"} | سعرك: ${myPrice} ج.م`, iHaveBuyBox ? "success" : "info");
+        }
+
+        const foundSkus = new Set(items.map(x => (x.sku_config || x.sku)?.toUpperCase()));
+        for (const p of batch) {
+          if (!foundSkus.has(p.sku?.toUpperCase())) {
+            log(`  ⚠️ ${p.sku} — مش موجود`);
+          }
+        }
+      } catch (e) {
+        log(`  ❌ ${e.message}`, "error");
+      }
+      await new Promise(r => setTimeout(r, 3000));
+    }
+
+    setStats({ gained: gainedBuyBox, total: toReview.length });
+    setDone(true);
+    setRunning(false);
+    log(`🏁 انتهى! استردت Buy Box في ${gainedBuyBox} منتج`, "success");
+    onDone();
+  };
+
+  return (
+    <div style={S.overlay}>
+      <div style={{ ...S.modal, maxWidth: 560 }}>
+        <div style={S.modalHead}>
+          <span style={S.modalTitle}>🔍 مراجعة Buy Box</span>
+          <button onClick={onClose} style={S.closeBtn}>✖</button>
+        </div>
+
+        {!running && !done && (
+          <div style={S.card}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
+              <div style={{ textAlign: "center", background: "#f0fdf4", borderRadius: 8, padding: 12 }}>
+                <div style={{ fontSize: 24, fontWeight: 800, color: "#059669" }}>{buyboxPct}%</div>
+                <div style={{ fontSize: 12, color: "#64748b" }}>نسبة Buy Box</div>
+              </div>
+              <div style={{ textAlign: "center", background: "#fff5f5", borderRadius: 8, padding: 12 }}>
+                <div style={{ fontSize: 24, fontWeight: 800, color: "#ef4444" }}>{toReview.length}</div>
+                <div style={{ fontSize: 12, color: "#64748b" }}>محتاج مراجعة</div>
+              </div>
+            </div>
+            <p style={S.hint}>هيسكرب المنتجات اللي أنت عارضها بس مش واخد فيها Buy Box</p>
+          </div>
+        )}
+
+        {(running || done) && (
+          <>
+            <div style={S.progWrap}><div style={{ ...S.progBar, width: `${progress}%` }} /></div>
+            <div style={{ textAlign: "center", color: "#6366f1", fontWeight: 700, marginBottom: 8 }}>{progress}%</div>
+            <div style={S.logBox}>
+              {logs.map((l, i) => <div key={i} style={{ display: "flex", gap: 8, marginBottom: 3 }}>
+                <span style={{ color: "#475569", fontSize: 10, minWidth: 55 }}>{l.time}</span>
+                <span style={{ fontSize: 12, color: l.type === "error" ? "#f87171" : l.type === "success" ? "#4ade80" : "#94a3b8" }}>{l.msg}</span>
+              </div>)}
+            </div>
+          </>
+        )}
+
+        {done && stats && (
+          <div style={{ ...S.card, background: "#f0fdf4", border: "1px solid #86efac", marginTop: 10 }}>
+            <div style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 20, fontWeight: 800, color: "#059669" }}>
+                استردت Buy Box في {stats.gained} من {stats.total} منتج
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 14 }}>
+          {!running && <button onClick={onClose} style={S.btnGhost}>{done ? "إغلاق" : "إلغاء"}</button>}
+          {!running && !done && toReview.length > 0 && (
+            <button onClick={run} style={{ ...S.btnPrimary, background: "#f59e0b" }}>
+              🔍 ابدأ المراجعة ({toReview.length} منتج)
+            </button>
+          )}
+          {!running && !done && toReview.length === 0 && (
+            <div style={{ color: "#059669", fontWeight: 600 }}>✅ كل منتجاتك عندها Buy Box!</div>
+          )}
+          {done && <button onClick={onClose} style={{ ...S.btnPrimary, marginTop: 0 }}>✅ إغلاق</button>}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // ===================== SELLERS PAGE =====================
 const SellersPage = ({ products, onBack }) => {
   const [selectedSeller, setSelectedSeller] = useState(null);
@@ -1094,6 +1266,7 @@ export default function App() {
   const [showSellers, setShowSellers] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showSkuImport, setShowSkuImport] = useState(false);
+  const [showBuyBoxReview, setShowBuyBoxReview] = useState(false);
   const [showScrapeUrl, setShowScrapeUrl] = useState(false);
   const [showScrapeEgypt, setShowScrapeEgypt] = useState(false);
   const [showDash, setShowDash] = useState(true);
@@ -1170,6 +1343,7 @@ export default function App() {
     if (activeTab === "losers" && !(p.noon_eg_price != null && p.selling_price && parseFloat(p.noon_eg_price) < parseFloat(p.selling_price))) return false;
     if (activeTab === "changed" && !(p.prev_noon_eg_price != null && p.prev_noon_eg_price !== p.noon_eg_price)) return false;
     if (activeTab === "not_found" && !(p.not_found_uae || p.not_found_eg)) return false;
+    if (activeTab === "z_uae_only" && !(p.sku_type === "Z" && !p.i_am_seller && (p.noon_eg_price === null || p.not_found_eg))) return false;
     if (activeTab === "not_selling" && !(p.noon_eg_price != null && !p.i_am_seller)) return false;
     if (activeTab === "cheaper_exists" && !(p.i_am_seller && !p.i_have_buy_box)) return false;
     if (activeTab === "buybox" && !p.i_have_buy_box) return false;
@@ -1195,6 +1369,7 @@ export default function App() {
     losers: products.filter(p => p.noon_eg_price != null && p.selling_price && parseFloat(p.noon_eg_price) < parseFloat(p.selling_price)).length,
     changed: products.filter(p => p.prev_noon_eg_price != null && p.prev_noon_eg_price !== p.noon_eg_price).length,
     not_found: products.filter(p => p.not_found_uae || p.not_found_eg).length,
+    z_uae_only: products.filter(p => p.sku_type === "Z" && !p.i_am_seller && (p.noon_eg_price === null || p.not_found_eg)).length,
   };
 
   return (
@@ -1218,6 +1393,7 @@ export default function App() {
         <button onClick={() => setShowScrapeUrl(true)} style={{ ...S.btnPrimary, background: "#7c3aed" }}>🔍 سكراب كاتيجوري</button>
         <button onClick={() => setShowSkuImport(true)} style={{ ...S.btnPrimary, background: "#0891b2" }}>📋 استيراد SKUs</button>
         <button onClick={() => setShowScrapeEgypt(true)} style={{ ...S.btnPrimary, background: "#059669" }}>🇪🇬 تحديث أسعار مصر</button>
+        <button onClick={() => setShowBuyBoxReview(true)} style={{ ...S.btnPrimary, background: "#f59e0b" }}>🔍 مراجعة Buy Box</button>
         <button onClick={() => exportCSV(filtered)} style={S.btnGhost}>💾 تصدير CSV</button>
         <button onClick={() => setShowSellers(true)} style={{ ...S.btnGhost, borderColor: "#8b5cf6", color: "#8b5cf6" }}>🏪 البائعين</button>
         <button onClick={() => setShowDash(!showDash)} style={S.btnGhost}>📊</button>
@@ -1256,6 +1432,7 @@ export default function App() {
           ["losers", `🔴 خاسرة (${tc.losers})`],
           ["changed", `📉 تغير سعرها (${tc.changed})`],
           ["not_found", `❓ مش موجود (${tc.not_found})`],
+          ["z_uae_only", `🔵 Z في UAE مش في مصر (${tc.z_uae_only})`],
         ].map(([id, lbl]) => (
           <button key={id} onClick={() => setActiveTab(id)} style={{ ...S.tab, ...(activeTab === id ? S.tabOn : {}) }}>{lbl}</button>
         ))}
@@ -1298,6 +1475,7 @@ export default function App() {
       {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} userName={userName} setUserName={setUserName} aedRate={aedRate} setAedRate={setAedRate} commission={commission} setCommission={setCommission} />}
       {showScrapeUrl && <ScrapeUrlModal onClose={() => setShowScrapeUrl(false)} onDone={loadData} userName={userName} products={products} />}
       {showScrapeEgypt && <ScrapeEgyptModal onClose={() => setShowScrapeEgypt(false)} products={products} onDone={loadData} userName={userName} />}
+      {showBuyBoxReview && <BuyBoxReviewModal onClose={() => setShowBuyBoxReview(false)} products={products} onDone={loadData} userName={userName} />}
       {showSkuImport && <SkuImportModal onClose={() => setShowSkuImport(false)} onDone={loadData} userName={userName} products={products} />}
     </>
     }</div>
