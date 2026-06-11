@@ -90,7 +90,9 @@ export default async function handler(req, res) {
     else if (text === "/status") {
       const products = await getProducts();
       const total = products.length;
+      const selling = products.filter(p => p.i_am_seller).length;
       const buybox = products.filter(p => p.i_have_buy_box).length;
+      const buyboxPct = selling > 0 ? ((buybox / selling) * 100).toFixed(1) : 0;
       const cheaper = products.filter(p => p.i_am_seller && !p.i_have_buy_box).length;
       const losers = products.filter(p => p.noon_eg_price && p.selling_price && parseFloat(p.noon_eg_price) < parseFloat(p.selling_price)).length;
       const notFound = products.filter(p => p.not_found_eg).length;
@@ -102,7 +104,7 @@ export default async function handler(req, res) {
 
 📦 إجمالي المنتجات: <b>${total}</b>
 ✅ تم سكرابهم: <b>${scraped}</b>
-🏆 Buy Box عندك: <b>${buybox}</b>
+🏆 Buy Box عندك: <b>${buybox}</b> من <b>${selling}</b> منتج (<b>${buyboxPct}%</b>)
 ⚠️ في أرخص منك: <b>${cheaper}</b>
 🔴 منتجات خاسرة: <b>${losers}</b>
 🚫 مش عارضها: <b>${notSelling}</b>
@@ -186,7 +188,9 @@ ${sellersText}
       const products = await getProducts();
       const total = products.length;
       const scraped = products.filter(p => p.noon_eg_price != null).length;
+      const selling = products.filter(p => p.i_am_seller).length;
       const buybox = products.filter(p => p.i_have_buy_box).length;
+      const buyboxPct = selling > 0 ? ((buybox / selling) * 100).toFixed(1) : 0;
       const cheaper = products.filter(p => p.i_am_seller && !p.i_have_buy_box).length;
       const losers = products.filter(p => p.noon_eg_price && p.selling_price && parseFloat(p.noon_eg_price) < parseFloat(p.selling_price)).length;
       const notFound = products.filter(p => p.not_found_eg).length;
@@ -210,7 +214,7 @@ ${sellersText}
 ${new Date().toLocaleDateString("ar-EG")}
 
 📦 إجمالي: <b>${total}</b> | مسكرب: <b>${scraped}</b>
-🏆 Buy Box: <b>${buybox}</b>
+🏆 Buy Box: <b>${buybox}/${selling}</b> (<b>${buyboxPct}%</b>)
 ⚠️ في أرخص: <b>${cheaper}</b>
 🔴 خاسرة: <b>${losers}</b>
 🚫 مش عارض: <b>${notSelling}</b>
