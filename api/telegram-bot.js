@@ -81,7 +81,8 @@ export default async function handler(req, res) {
 /notfound — مش موجودة على مصر
 /product SKU — تفاصيل منتج
 /update — تحديث أسعار مصر
-/report — تقرير يومي كامل`
+/report — تقرير يومي كامل
+/scrape [لينك] — سكراب كاتيجوري نون UAE`
       );
     }
 
@@ -245,6 +246,115 @@ ${losersText}`
       if (!runRes.ok) return await reply("❌ فشل تشغيل السكراب");
       const runData = await runRes.json();
       await reply(`✅ اتشغّل السكراب على ${Math.min(toScrape.length, 100)} منتج\nRun ID: ${runData.data?.id}\nهتوصلك تنبيه لما يخلص`);
+    }
+
+    // /scrape URL
+    else if (text.startsWith("/scrape ")) {
+      const url = text.replace("/scrape ", "").trim();
+      if (!url.startsWith("http")) return await reply("❌ حط لينك صحيح بعد /scrape");
+
+      const serverSetting = await getSetting("server");
+      const apifyToken = serverSetting?.apifyToken;
+      if (!apifyToken) return await reply("❌ مفيش Apify Token في الإعدادات");
+
+      await reply(`⏳ جاري السكراب على:
+${url}`);
+
+      try {
+        const runRes = await fetch(`https://api.apify.com/v2/acts/shahidirfan~noon-com-scraper/runs`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${apifyToken}` },
+          body: JSON.stringify({ startUrl: url, maxProducts: 100, maxPages: 5 }),
+        });
+        if (!runRes.ok) throw new Error(`فشل تشغيل الـ Actor: ${runRes.status}`);
+        const runData = await runRes.json();
+        const runId = runData.data?.id;
+        const datasetId = runData.data?.defaultDatasetId;
+
+        // Poll
+        let succeeded = false;
+        for (let a = 0; a < 60; a++) {
+          await new Promise(r => setTimeout(r, 5000));
+          const st = await fetch(`https://api.apify.com/v2/actor-runs/${runId}`, { headers: { Authorization: `Bearer ${apifyToken}` } });
+          const stData = await st.json();
+          const status = stData.data?.status;
+          const count = stData.data?.stats?.itemCount || 0;
+          if (status === "SUCCEEDED") { succeeded = true; break; }
+          if (status === "FAILED" || status === "ABORTED") throw new Error(`السكراب ${status}`);
+        }
+        if (!succeeded) throw new Error("انتهى الوقت");
+
+        // Get results
+        const itemsRes = await fetch(`https://api.apify.com/v2/datasets/${datasetId}/items?limit=500`, { headers: { Authorization: `Bearer ${apifyToken}` } });
+        const items = await itemsRes.json();
+
+        // Get AED rate
+        const rateSetting = await getSetting("aed_rate");
+        const aedRate = rateSetting?.rate || 13.6;
+
+        // Get existing SKUs
+        const products = await getProducts();
+        const existingSkus = new Set(products.map(p => p.sku?.toUpperCase()));
+
+        const toAdd = [];
+        const toUpdate = [];
+
+        for (const item of items) {
+          if (!item.url) continue;
+          const skuMatch = item.url.match(/\/([NZ][A-Z0-9]{5,})\//i);
+          const sku = skuMatch ? skuMatch[1].toUpperCase() : null;
+          if (!sku) continue;
+
+          const egUrl = item.url.replace("noon.com/uae-en/", "noon.com/egypt-en/").split("?")[0];
+          const uaePrice = parseFloat(item.currentPrice || 0);
+          const cost = uaePrice > 0 ? uaePrice * aedRate : null;
+          const sellingPrice = cost ? cost * 1.6 : null;
+
+          const product = {
+            id: sku, sku, sku_type: sku.startsWith("N") ? "N" : "Z",
+            title: item.title || "", brand: item.brand || "", image: item.image || "",
+            uae_url: item.url, egypt_url: egUrl,
+            uae_price: uaePrice || null, noon_eg_price: null, prev_noon_eg_price: null,
+            is_available: null, shipping: 0, cost, selling_price: sellingPrice,
+            sellers: null, rating: null, review_count: null,
+            buy_box_seller: null, i_have_buy_box: false, i_am_seller: false, my_price: null,
+            added_date: new Date().toISOString().split("T")[0],
+            added_by: "telegram", last_updated: new Date().toISOString().split("T")[0],
+            price_changed_at: null, last_uae_scrape: new Date().toISOString(),
+            not_found_uae: false, not_found_eg: false,
+          };
+
+          if (existingSkus.has(sku)) toUpdate.push(product);
+          else toAdd.push(product);
+        }
+
+        // Save in batches of 100
+        for (let b = 0; b < toAdd.length; b += 100) {
+          await fetch(`${SUPABASE_URL}/rest/v1/products`, {
+            method: "POST",
+            headers: { ...sbHeaders, Prefer: "resolution=merge-duplicates,return=minimal" },
+            body: JSON.stringify(toAdd.slice(b, b + 100)),
+          });
+        }
+        for (const p of toUpdate) {
+          await fetch(`${SUPABASE_URL}/rest/v1/products?id=eq.${p.id}`, {
+            method: "PATCH",
+            headers: { ...sbHeaders, Prefer: "return=minimal" },
+            body: JSON.stringify({ uae_price: p.uae_price, cost: p.cost, selling_price: p.selling_price, last_uae_scrape: p.last_uae_scrape }),
+          });
+        }
+
+        await reply(
+`✅ <b>اتسكرب بنجاح!</b>
+
+📦 إجمالي المنتجات: ${items.length}
+➕ أضيف جديد: ${toAdd.length}
+🔄 اتحدّث: ${toUpdate.length}
+🔗 الكاتيجوري: ${url.slice(0, 60)}`
+        );
+      } catch (e) {
+        await reply(`❌ خطأ في السكراب: ${e.message}`);
+      }
     }
 
     else {
