@@ -57,10 +57,10 @@ const sendTelegram = async (text) => {
   try {
     const tg = await db.getSetting("telegram");
     if (!tg?.botToken || !tg?.chatId) return false;
-    const res = await fetch(`https://api.telegram.org/bot${tg.botToken}/sendMessage`, {
+    const res = await fetch("/api/send-telegram", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: tg.chatId, text, parse_mode: "HTML" }),
+      body: JSON.stringify({ botToken: tg.botToken, chatId: tg.chatId, text }),
     });
     return res.ok;
   } catch { return false; }
