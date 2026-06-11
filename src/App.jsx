@@ -594,7 +594,7 @@ const ScrapeEgyptModal = ({ onClose, products, onDone, userName }) => {
       } catch (e) {
         log(`  ❌ ${e.message}`, "error");
       }
-      await new Promise(r => setTimeout(r, 2000));
+      await new Promise(r => setTimeout(r, 15000));
     }
 
     // Send Telegram summary
