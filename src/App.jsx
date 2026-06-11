@@ -28,7 +28,7 @@ const sb = async (path, opts = {}) => {
 };
 
 const db = {
-  getProducts: () => sb("products?order=created_at.desc&select=*&limit=10000", { headers: { "Range-Unit": "items", "Range": "0-9999" } }),
+  getProducts: () => sb("products?order=created_at.desc&select=*", { headers: { "Range": "0-9999", "Prefer": "count=none" } }),
   upsertProducts: (arr) => sb("products", { method: "POST", prefer: "resolution=merge-duplicates,return=representation", body: JSON.stringify(arr) }),
   updateProduct: (id, data) => sb(`products?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(data) }),
   deleteProduct: (id) => sb(`products?id=eq.${id}`, { method: "DELETE", prefer: "return=minimal" }),
