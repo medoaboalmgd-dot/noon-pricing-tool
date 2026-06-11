@@ -119,14 +119,15 @@ const apifyRun = async (actorId, input, token, retries = 3) => {
       const runData = await runRes.json();
       const runId = runData.data?.id;
       const datasetId = runData.data?.defaultDatasetId;
+      let finalStatus = "";
       for (let a = 0; a < 40; a++) {
         await new Promise(r => setTimeout(r, 4000));
         const st = await fetch(`https://api.apify.com/v2/actor-runs/${runId}`, { headers: { Authorization: `Bearer ${token}` } });
         const stData = await st.json();
-        const status = stData.data?.status;
-        if (status === "SUCCEEDED") break;
-        if (status === "FAILED" || status === "ABORTED") throw new Error(`Run ${status}`);
+        finalStatus = stData.data?.status;
+        if (finalStatus === "SUCCEEDED" || finalStatus === "FAILED" || finalStatus === "ABORTED") break;
       }
+      // FAILED can mean "0 products found" for this actor — return dataset anyway (may be empty)
       const res = await fetch(`https://api.apify.com/v2/datasets/${datasetId}/items?limit=1000`, { headers: { Authorization: `Bearer ${token}` } });
       return res.json();
     } catch (e) {
@@ -497,7 +498,7 @@ const ScrapeEgyptModal = ({ onClose, products, onDone, userName }) => {
     log(`🚀 بدأ السكراب — ${toScrape.length} منتج`);
     const aedSetting = await db.getSetting("aed_rate");
     const aedRate = aedSetting?.rate || 13.6;
-    const batchSize = 5;
+    const batchSize = 10;
     const alerts = [];
 
     for (let i = 0; i < toScrape.length; i += batchSize) {
@@ -594,7 +595,7 @@ const ScrapeEgyptModal = ({ onClose, products, onDone, userName }) => {
       } catch (e) {
         log(`  ❌ ${e.message}`, "error");
       }
-      await new Promise(r => setTimeout(r, 15000));
+      await new Promise(r => setTimeout(r, 3000));
     }
 
     // Send Telegram summary
