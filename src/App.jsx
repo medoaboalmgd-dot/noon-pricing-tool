@@ -64,25 +64,6 @@ const roundPrice = (price) => {
 const calcSelling = (cost) => roundPrice(cost * 1.6);
 const calcMargin = (sell, cost) => cost > 0 ? (((sell - cost) / sell) * 100).toFixed(1) : 0;
 const calcNetProfit = (sell, cost, commissionPct) => sell * (1 - commissionPct / 100) - cost;
-
-const roundPrice = (price) => {
-  if (!price || price <= 0) return price;
-  const candidates = [];
-  const base = Math.floor(price / 100) * 100;
-  // Generate candidates: x49 and x99 around the price
-  for (let i = -1; i <= 2; i++) {
-    candidates.push(base + i * 100 + 49);
-    candidates.push(base + i * 100 + 99);
-  }
-  // Find closest
-  let best = candidates[0];
-  let bestDiff = Math.abs(price - candidates[0]);
-  for (const c of candidates) {
-    const diff = Math.abs(price - c);
-    if (diff < bestDiff) { bestDiff = diff; best = c; }
-  }
-  return best;
-};
 const fmtEGP = (n) => n != null ? `${Math.round(n).toLocaleString("ar-EG")} ج.م` : "—";
 const fmtAED = (n) => n != null ? `${parseFloat(n).toFixed(2)} د.إ` : "—";
 const today = () => new Date().toISOString().split("T")[0];
