@@ -580,7 +580,7 @@ const ScrapeEgyptModal = ({ onClose, products, onDone, userName }) => {
         const foundSkus = new Set(items.map(x => (x.sku_config || x.sku)?.toUpperCase()));
         for (const p of batch) {
           if (!foundSkus.has(p.sku?.toUpperCase())) {
-            await db.updateProduct(p.id, { is_available: false, not_found_eg: true, last_updated: today() });
+            await db.updateProduct(p.id, { is_available: false, not_found_eg: true, last_updated: today(), last_eg_scrape: new Date().toISOString() });
             log(`  ⚠️ ${p.sku} — مش موجود على نون مصر`);
           }
         }
