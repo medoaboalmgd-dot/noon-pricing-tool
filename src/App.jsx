@@ -260,7 +260,12 @@ const SkuImportModal = ({ onClose, onDone, userName, products }) => {
 
     const toAdd = allProducts.filter(p => !existingSkus.has(p.sku?.toUpperCase()));
     const toUpdate = allProducts.filter(p => existingSkus.has(p.sku?.toUpperCase()));
-    if (toAdd.length > 0) await db.upsertProducts(toAdd);
+    // Save in batches of 100
+    const saveBatch = 100;
+    for (let b = 0; b < toAdd.length; b += saveBatch) {
+      await db.upsertProducts(toAdd.slice(b, b + saveBatch));
+      log(`  💾 حفظ ${Math.min(b + saveBatch, toAdd.length)}/${toAdd.length}...`);
+    }
     for (const p of toUpdate) await db.updateProduct(p.id, { uae_price: p.uae_price, cost: p.cost, selling_price: p.selling_price, last_uae_scrape: p.last_uae_scrape, not_found_uae: p.not_found_uae });
     setProgress(100);
     log(`🎉 أضاف ${toAdd.length} جديد — حدّث ${toUpdate.length} موجود — تخطى ${skipped}`, "success");
