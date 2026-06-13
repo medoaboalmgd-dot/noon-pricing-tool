@@ -1344,7 +1344,8 @@ export default function App() {
     if (activeTab === "changed" && !(p.prev_noon_eg_price != null && p.prev_noon_eg_price !== p.noon_eg_price)) return false;
     if (activeTab === "not_found" && !(p.not_found_uae || p.not_found_eg)) return false;
     if (activeTab === "z_uae_only" && !(p.sku_type === "Z" && !p.i_am_seller && (p.noon_eg_price === null || p.not_found_eg))) return false;
-    if (activeTab === "needs_listing" && !(p.sku_type === "N" && !p.i_am_seller)) return false;
+    if (activeTab === "needs_listing_no_sellers" && !(p.sku_type === "N" && !p.i_am_seller && (p.noon_eg_price === null || p.not_found_eg || (Array.isArray(p.sellers) && p.sellers.length === 0)))) return false;
+    if (activeTab === "needs_listing_has_sellers" && !(p.sku_type === "N" && !p.i_am_seller && p.noon_eg_price != null && !p.not_found_eg && Array.isArray(p.sellers) && p.sellers.length > 0)) return false;
     if (activeTab === "not_selling" && !(p.noon_eg_price != null && !p.i_am_seller)) return false;
     if (activeTab === "cheaper_exists" && !(p.i_am_seller && !p.i_have_buy_box)) return false;
     if (activeTab === "buybox" && !p.i_have_buy_box) return false;
@@ -1371,7 +1372,8 @@ export default function App() {
     changed: products.filter(p => p.prev_noon_eg_price != null && p.prev_noon_eg_price !== p.noon_eg_price).length,
     not_found: products.filter(p => p.not_found_uae || p.not_found_eg).length,
     z_uae_only: products.filter(p => p.sku_type === "Z" && !p.i_am_seller && (p.noon_eg_price === null || p.not_found_eg)).length,
-    needs_listing: products.filter(p => p.sku_type === "N" && !p.i_am_seller).length,
+    needs_listing_no_sellers: products.filter(p => p.sku_type === "N" && !p.i_am_seller && (p.noon_eg_price === null || p.not_found_eg || (Array.isArray(p.sellers) && p.sellers.length === 0))).length,
+    needs_listing_has_sellers: products.filter(p => p.sku_type === "N" && !p.i_am_seller && p.noon_eg_price != null && !p.not_found_eg && Array.isArray(p.sellers) && p.sellers.length > 0).length,
   };
 
   return (
@@ -1435,7 +1437,8 @@ export default function App() {
           ["changed", `📉 تغير سعرها (${tc.changed})`],
           ["not_found", `❓ مش موجود (${tc.not_found})`],
           ["z_uae_only", `🔵 Z في UAE مش في مصر (${tc.z_uae_only})`],
-          ["needs_listing", `📋 محتاجة تتعرض (${tc.needs_listing})`],
+          ["needs_listing_no_sellers", `🆕 محتاجة تتعرض — مفيش تجار (${tc.needs_listing_no_sellers})`],
+          ["needs_listing_has_sellers", `🏪 محتاجة تتعرض — في تجار (${tc.needs_listing_has_sellers})`],
         ].map(([id, lbl]) => (
           <button key={id} onClick={() => setActiveTab(id)} style={{ ...S.tab, ...(activeTab === id ? S.tabOn : {}) }}>{lbl}</button>
         ))}
