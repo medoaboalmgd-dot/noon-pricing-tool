@@ -578,6 +578,14 @@ const ScrapeEgyptModal = ({ onClose, products, onDone, userName, forceUpdate = f
             if (history.length > 30) history.shift();
           }
 
+          // Update buybox history
+          const buyboxHistory = Array.isArray(p.buybox_history) ? [...p.buybox_history] : [];
+          const lastBBEntry = buyboxHistory[buyboxHistory.length - 1];
+          if (!lastBBEntry || lastBBEntry.seller !== buyBoxSeller) {
+            buyboxHistory.push({ d: today(), seller: buyBoxSeller, price: offers[0]?.price || null });
+            if (buyboxHistory.length > 30) buyboxHistory.shift();
+          }
+
           await db.updateProduct(p.id, {
             noon_eg_price: newPrice,
             prev_noon_eg_price: priceChanged ? prevPrice : p.prev_noon_eg_price,
@@ -592,6 +600,7 @@ const ScrapeEgyptModal = ({ onClose, products, onDone, userName, forceUpdate = f
             my_price: myPrice,
             not_found_eg: false,
             price_history: history,
+            buybox_history: buyboxHistory,
             cost, selling_price, last_updated: today(), last_eg_scrape: new Date().toISOString(),
           });
           log(`  ✅ ${p.sku} — ${newPrice} ج.م ${iHaveBuyBox ? "🏆" : ""}`, "success");
@@ -1179,11 +1188,147 @@ const exportSellerProductsCSV = (sellerName, products) => {
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `seller_${sellerName}_${today()}.csv`; a.click();
 };
 
+
+// ===================== COMPETITOR SCRAPE MODAL =====================
+const CompetitorScrapeModal = ({ onClose, onDone, userName, products }) => {
+  const [partnerCode, setPartnerCode] = useState("");
+  const [logs, setLogs] = useState([]);
+  const [progress, setProgress] = useState(0);
+  const [running, setRunning] = useState(false);
+  const [done, setDone] = useState(false);
+  const [results, setResults] = useState(null);
+
+  const log = (msg, type = "info") => setLogs(l => [...l, { msg, type, time: new Date().toLocaleTimeString("ar-EG") }]);
+
+  const run = async () => {
+    const code = partnerCode.trim().replace(/^p-/, "");
+    if (!code) { alert("حط الـ partner code أولاً"); return; }
+    const token = localStorage.getItem(`apify_token_${userName}`);
+    if (!token) { alert("سجل الـ Apify API Token في الإعدادات أولاً"); return; }
+
+    setRunning(true);
+    log(`🔍 بيجيب منتجات البائع: p-${code}`);
+
+    try {
+      // Use noon seller monitoring to get seller products
+      const url = `https://www.noon.com/egypt-en/p-${code}/`;
+      log(`📦 بيسكرب: ${url}`);
+
+      const items = await apifyRun(APIFY_UAE, {
+        startUrl: url,
+        maxProducts: 500,
+        maxPages: 20,
+      }, token);
+
+      log(`✅ جاب ${items.length} منتج من المنافس`);
+      setProgress(50);
+
+      const mySkus = new Set(products.map(p => p.sku?.toUpperCase()));
+      const inMyStore = items.filter(item => {
+        const sku = extractSKU(item.url);
+        return sku && mySkus.has(sku.toUpperCase());
+      });
+      const notInMyStore = items.filter(item => {
+        const sku = extractSKU(item.url);
+        return sku && !mySkus.has(sku.toUpperCase());
+      });
+
+      log(`📊 مشتركة معاك: ${inMyStore.length} | مش في كاتالوجك: ${notInMyStore.length}`, "success");
+      setProgress(100);
+      setResults({ all: items, shared: inMyStore, missing: notInMyStore, partnerCode: code });
+      setDone(true);
+    } catch (e) {
+      log(`❌ خطأ: ${e.message}`, "error");
+    }
+    setRunning(false);
+  };
+
+  const exportMissing = () => {
+    if (!results?.missing) return;
+    const headers = ["SKU", "الاسم", "السعر", "لينك UAE"];
+    const rows = results.missing.map(item => {
+      const sku = extractSKU(item.url) || "";
+      return [sku, item.title || "", item.currentPrice || "", item.url || ""];
+    });
+    const csv = [headers, ...rows].map(r => r.map(c => `"${c ?? ""}"`).join(",")).join("\n");
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `competitor_p${results.partnerCode}_missing_${today()}.csv`;
+    a.click();
+  };
+
+  return (
+    <div style={S.overlay}>
+      <div style={{ ...S.modal, maxWidth: 580 }}>
+        <div style={S.modalHead}>
+          <span style={S.modalTitle}>🕵️ سكراب منافس</span>
+          <button onClick={onClose} style={S.closeBtn}>✖</button>
+        </div>
+
+        {!running && !done && (
+          <div style={S.card}>
+            <label style={S.label}>🏪 Partner Code للمنافس</label>
+            <div style={S.row}>
+              <span style={{ color: "#64748b", fontSize: 13, whiteSpace: "nowrap" }}>p-</span>
+              <input value={partnerCode} onChange={e => setPartnerCode(e.target.value)}
+                style={S.input} placeholder="43181" dir="ltr" />
+            </div>
+            <p style={S.hint}>بتلاقيه في لينك صفحة البائع على نون: noon.com/egypt-en/p-XXXXX/</p>
+          </div>
+        )}
+
+        {(running || done) && (
+          <>
+            <div style={S.progWrap}><div style={{ ...S.progBar, width: `${progress}%` }} /></div>
+            <div style={{ textAlign: "center", color: "#6366f1", fontWeight: 700, marginBottom: 8 }}>{progress}%</div>
+            <div style={S.logBox}>
+              {logs.map((l, i) => <div key={i} style={{ display: "flex", gap: 8, marginBottom: 3 }}>
+                <span style={{ color: "#475569", fontSize: 10, minWidth: 55 }}>{l.time}</span>
+                <span style={{ fontSize: 12, color: l.type === "error" ? "#f87171" : l.type === "success" ? "#4ade80" : "#94a3b8" }}>{l.msg}</span>
+              </div>)}
+            </div>
+          </>
+        )}
+
+        {done && results && (
+          <div style={{ marginTop: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 12 }}>
+              <div style={{ ...S.dashCard, borderTop: "3px solid #6366f1" }}>
+                <div style={{ fontSize: 22, fontWeight: 800, color: "#6366f1" }}>{results.all.length}</div>
+                <div style={{ fontSize: 11, color: "#64748b" }}>إجمالي منتجاته</div>
+              </div>
+              <div style={{ ...S.dashCard, borderTop: "3px solid #10b981" }}>
+                <div style={{ fontSize: 22, fontWeight: 800, color: "#10b981" }}>{results.shared.length}</div>
+                <div style={{ fontSize: 11, color: "#64748b" }}>مشتركة معاك</div>
+              </div>
+              <div style={{ ...S.dashCard, borderTop: "3px solid #f59e0b" }}>
+                <div style={{ fontSize: 22, fontWeight: 800, color: "#f59e0b" }}>{results.missing.length}</div>
+                <div style={{ fontSize: 11, color: "#64748b" }}>مش في كاتالوجك</div>
+              </div>
+            </div>
+            {results.missing.length > 0 && (
+              <button onClick={exportMissing} style={{ ...S.btnPrimary, width: "100%", background: "#f59e0b" }}>
+                💾 Export المنتجات المش عندك ({results.missing.length})
+              </button>
+            )}
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 14 }}>
+          {!running && <button onClick={onClose} style={S.btnGhost}>{done ? "إغلاق" : "إلغاء"}</button>}
+          {!running && !done && <button onClick={run} style={{ ...S.btnPrimary, background: "#7c3aed" }}>🚀 ابدأ</button>}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // ===================== SELLERS PAGE =====================
 const SellersPage = ({ products, onBack }) => {
   const [selectedSeller, setSelectedSeller] = useState(null);
 
-  // Build sellers map
+  // Build sellers map with partner_code
   const sellersMap = {};
   for (const p of products) {
     if (!Array.isArray(p.sellers)) continue;
@@ -1191,14 +1336,19 @@ const SellersPage = ({ products, onBack }) => {
       const name = s.seller || "";
       if (!name) continue;
       const isMe = normalizeSellerName(name) === normalizeSellerName(MY_ACCOUNT);
-      if (isMe) continue; // skip own account
+      if (isMe) continue;
       if (!sellersMap[name]) {
         sellersMap[name] = {
           name,
           rating: s.rating || null,
           num_ratings: s.num_ratings || null,
+          partner_code: s.partner_code || null,
           products: [],
         };
+      }
+      // Update partner_code if found
+      if (s.partner_code && !sellersMap[name].partner_code) {
+        sellersMap[name].partner_code = s.partner_code;
       }
       sellersMap[name].products.push(p);
     }
@@ -1240,7 +1390,7 @@ const SellersPage = ({ products, onBack }) => {
           <table style={S.table}>
             <thead>
               <tr style={{ background: "#f8fafc" }}>
-                {["صورة", "المنتج", "SKU", "سعر UAE", "سعر مصر", "سعره", "الفرق"].map(h => <th key={h} style={S.th}>{h}</th>)}
+                {["صورة", "المنتج", "SKU", "سعر UAE", "سعر مصر", "سعره", "الفرق", "تاريخ Buy Box"].map(h => <th key={h} style={S.th}>{h}</th>)}
               </tr>
             </thead>
             <tbody>
@@ -1273,6 +1423,17 @@ const SellersPage = ({ products, onBack }) => {
                         </span>
                       ) : "—"}
                     </td>
+                    <td style={{ ...S.td, textAlign: "center" }}>
+                      {Array.isArray(p.buybox_history) && p.buybox_history.length > 0 ? (
+                        <div style={{ fontSize: 10, maxWidth: 120 }}>
+                          {p.buybox_history.slice(-3).reverse().map((h, i) => (
+                            <div key={i} style={{ color: normalizeSellerName(h.seller) === normalizeSellerName(selectedSeller) ? "#ef4444" : "#94a3b8", marginBottom: 2 }}>
+                              {h.d}: {h.seller?.slice(0,15)}
+                            </div>
+                          ))}
+                        </div>
+                      ) : "—"}
+                    </td>
                   </tr>
                 );
               })}
@@ -1302,7 +1463,10 @@ const SellersPage = ({ products, onBack }) => {
             <tbody>
               {filteredSellers.map((s, i) => (
                 <tr key={i} style={S.tr}>
-                  <td style={S.td}><strong>{s.name}</strong></td>
+                  <td style={S.td}>
+                    <div><strong>{s.name}</strong></div>
+                    {s.partner_code && <div style={{ fontSize: 11, color: "#94a3b8" }}>p-{s.partner_code.replace("p-","")}</div>}
+                  </td>
                   <td style={{ ...S.td, textAlign: "center" }}>
                     {s.rating ? <span style={{ ...S.badge, background: "#fef9c3", color: "#713f12" }}>⭐ {s.rating} ({s.num_ratings || "—"})</span> : "—"}
                   </td>
@@ -1334,6 +1498,7 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showSkuImport, setShowSkuImport] = useState(false);
   const [showBuyBoxReview, setShowBuyBoxReview] = useState(false);
+  const [showCompetitor, setShowCompetitor] = useState(false);
   const [showScrapeUrl, setShowScrapeUrl] = useState(false);
   const [showScrapeEgypt, setShowScrapeEgypt] = useState(false);
   const [showScrapeEgyptForce, setShowScrapeEgyptForce] = useState(false);
@@ -1467,6 +1632,7 @@ export default function App() {
         <button onClick={() => setShowScrapeEgypt(true)} style={{ ...S.btnPrimary, background: "#059669" }}>🇪🇬 تحديث أسعار مصر</button>
         <button onClick={() => setShowScrapeEgyptForce(true)} style={{ ...S.btnGhost, borderColor: "#059669", color: "#059669" }}>⚡ تحديث إجباري</button>
         <button onClick={() => setShowBuyBoxReview(true)} style={{ ...S.btnPrimary, background: "#f59e0b" }}>🔍 مراجعة Buy Box</button>
+        <button onClick={() => setShowCompetitor(true)} style={{ ...S.btnPrimary, background: "#7c3aed" }}>🕵️ سكراب منافس</button>
         <button onClick={() => exportCSV(filtered)} style={S.btnGhost}>💾 تصدير CSV</button>
         <button onClick={() => setShowSellers(true)} style={{ ...S.btnGhost, borderColor: "#8b5cf6", color: "#8b5cf6" }}>🏪 البائعين</button>
         <button onClick={() => setShowDash(!showDash)} style={S.btnGhost}>📊</button>
@@ -1551,6 +1717,7 @@ export default function App() {
       {showScrapeUrl && <ScrapeUrlModal onClose={() => setShowScrapeUrl(false)} onDone={loadData} userName={userName} products={products} />}
       {showScrapeEgypt && <ScrapeEgyptModal onClose={() => setShowScrapeEgypt(false)} products={products} onDone={loadData} userName={userName} forceUpdate={false} />}
       {showScrapeEgyptForce && <ScrapeEgyptModal onClose={() => setShowScrapeEgyptForce(false)} products={products} onDone={loadData} userName={userName} forceUpdate={true} />}
+      {showCompetitor && <CompetitorScrapeModal onClose={() => setShowCompetitor(false)} onDone={loadData} userName={userName} products={products} />}
       {showBuyBoxReview && <BuyBoxReviewModal onClose={() => setShowBuyBoxReview(false)} products={products} onDone={loadData} userName={userName} />}
       {showSkuImport && <SkuImportModal onClose={() => setShowSkuImport(false)} onDone={loadData} userName={userName} products={products} />}
     </>
