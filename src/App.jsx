@@ -1240,11 +1240,10 @@ const ShopImportModal = ({ onClose, onDone, userName, products }) => {
     // Support pasting from Excel: SKU TAB price TAB shop_name
     const text = e.clipboardData.getData("text");
     const lines = text.trim().split(/[\r\n]+/);
-]+/);
     if (lines.length > 1) {
       e.preventDefault();
       const parsed = lines.map(line => {
-        const parts = line.split(/[	,]/);
+        const parts = line.split(/[\t,]/);
         return {
           sku: (parts[0] || "").trim().replace(/-\d+$/, "").toUpperCase(),
           shop_price: (parts[1] || "").trim(),
