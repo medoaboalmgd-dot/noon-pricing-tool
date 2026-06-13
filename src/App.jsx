@@ -88,6 +88,19 @@ const roundPrice = (price) => {
 const calcSelling = (cost) => roundPrice(cost * 1.6);
 const calcMaxPrice = (cost) => roundPrice(cost * 1.65);
 const calcMinPrice = (cost) => cost * 1.35; // No rounding for min (floor check)
+
+const calcSuggestedPrice = (cost, competitorPrice) => {
+  if (!cost) return null;
+  const minPrice = cost * 1.35;
+  const maxPrice = roundPrice(cost * 1.65);
+  // No competitor or competitor above max → use max
+  if (!competitorPrice || competitorPrice > maxPrice) return maxPrice;
+  // Competitor below min → can't compete, use min
+  if (competitorPrice <= minPrice) return roundPrice(minPrice);
+  // Competitor between min and max → undercut by 20
+  const suggested = competitorPrice - 20;
+  return suggested < minPrice ? roundPrice(minPrice) : roundPrice(suggested);
+};
 const calcMargin = (sell, cost) => cost > 0 ? (((sell - cost) / sell) * 100).toFixed(1) : 0;
 const calcNetProfit = (sell, cost, commissionPct) => sell * (1 - commissionPct / 100) - cost;
 const fmtEGP = (n) => n != null ? `${Math.round(n).toLocaleString("ar-EG")} ج.م` : "—";
@@ -899,6 +912,11 @@ const ProductRow = ({ p, aedRate, commission, onShipChange, onDelete }) => {
   const netProfitPct = sell && cost ? ((sell * (1 - commission/100) - cost) / sell) * 100 : null;
   const isLoser = p.noon_eg_price != null && minPrice && parseFloat(p.noon_eg_price) < minPrice;
   const isLowMargin = netProfitPct != null && netProfitPct < 10;
+  // Suggested price: based on lowest competitor price
+  const lowestCompetitor = Array.isArray(p.sellers) && p.sellers.length > 0
+    ? Math.min(...p.sellers.filter(s => normalizeSellerName(s.seller) !== normalizeSellerName(MY_ACCOUNT)).map(s => parseFloat(s.price || 999999)))
+    : null;
+  const suggestedPrice = cost ? calcSuggestedPrice(cost, lowestCompetitor === 999999 ? null : lowestCompetitor) : null;
   const priceChanged = p.prev_noon_eg_price != null && p.prev_noon_eg_price !== p.noon_eg_price;
   const cheaperExists = p.i_am_seller && !p.i_have_buy_box;
   const hasHistory = Array.isArray(p.price_history) && p.price_history.length > 1;
@@ -949,6 +967,11 @@ const ProductRow = ({ p, aedRate, commission, onShipChange, onDelete }) => {
                 {hasHistory && <button onClick={() => setShowHistory(true)} style={{ ...S.iconBtn, padding: "1px 4px", fontSize: 11 }}>📊</button>}
               </div>
               {priceChanged && <div style={{ fontSize: 10, color: "#94a3b8" }}>كان: {fmtEGP(p.prev_noon_eg_price)}{parseFloat(p.noon_eg_price) > parseFloat(p.prev_noon_eg_price) ? " 📈" : " 📉"}</div>}
+              {suggestedPrice && (
+                <div style={{ fontSize: 11, color: "#6366f1", fontWeight: 600, marginTop: 2 }}>
+                  💡 {fmtEGP(suggestedPrice)}
+                </div>
+              )}
             </div>
           ) : <span style={{ color: "#d1d5db", fontSize: 11 }}>لم يُسكرب</span>}
         </td>
@@ -1745,12 +1768,17 @@ export default function App() {
   };
 
   const exportCSV = (data) => {
-    const headers = ["SKU", "النوع", "الاسم", "البراند", "سعر UAE", "شحن", "تكلفة", "سعر البيع", "صافي الربح", "سعر نون مصر", "Buy Box", "أنت البائع", "سعرك", "عدد البائعين", "تقييم", "متاح", "تاريخ الإضافة"];
+    const headers = ["SKU", "النوع", "الاسم", "البراند", "سعر UAE", "شحن", "تكلفة", "سعر البيع", "صافي الربح", "حد أدنى", "حد أقصى", "سعر مقترح", "سعر نون مصر", "Buy Box", "أنت البائع", "سعرك", "عدد البائعين", "تقييم", "متاح", "تاريخ الإضافة"];
     const rows = data.map(p => {
       const cost = p.uae_price > 0 ? calcCost(p.uae_price, aedRate, p.shipping || 0) : "";
       const sell = cost ? calcSelling(cost) : "";
+      const minP = cost ? Math.round(cost * 1.35) : "";
+      const maxP = cost ? Math.round(cost * 1.65) : "";
+      const competitors = Array.isArray(p.sellers) ? p.sellers.filter(s => normalizeSellerName(s.seller) !== normalizeSellerName(MY_ACCOUNT)) : [];
+      const lowestComp = competitors.length > 0 ? Math.min(...competitors.map(s => parseFloat(s.price || 999999))) : null;
+      const suggested = cost ? calcSuggestedPrice(cost, lowestComp === 999999 ? null : lowestComp) : "";
       const net = sell && cost ? calcNetProfit(sell, cost, commission) : "";
-      return [p.sku, p.sku_type, p.title, p.brand, p.uae_price, p.shipping, cost ? Math.round(cost) : "", sell ? Math.round(sell) : "", net ? Math.round(net) : "", p.noon_eg_price, p.buy_box_seller, p.i_am_seller ? "نعم" : "لأ", p.my_price, p.sellers?.length || "", p.rating, p.is_available ? "نعم" : "لأ", p.added_date];
+      return [p.sku, p.sku_type, p.title, p.brand, p.uae_price, p.shipping, cost ? Math.round(cost) : "", sell ? Math.round(sell) : "", net ? Math.round(net) : "", minP, maxP, suggested || "", p.noon_eg_price, p.buy_box_seller, p.i_am_seller ? "نعم" : "لأ", p.my_price, p.sellers?.length || "", p.rating, p.is_available ? "نعم" : "لأ", p.added_date];
     });
     const csv = [headers, ...rows].map(r => r.map(c => `"${c ?? ""}"`).join(",")).join("\n");
     const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
@@ -1885,7 +1913,7 @@ export default function App() {
             <table style={S.table}>
               <thead>
                 <tr style={{ background: "#f8fafc" }}>
-                  {["صورة", "المنتج", "سعر UAE", "شحن", "تكلفة", "سعر البيع", "صافي الربح", "نون مصر", "بائعين", "حالتك", "إجراءات"].map(h => (
+                  {["صورة", "المنتج", "سعر UAE", "شحن", "تكلفة", "سعر البيع", "صافي الربح", "نون مصر / مقترح", "بائعين", "حالتك", "إجراءات"].map(h => (
                     <th key={h} style={S.th}>{h}</th>
                   ))}
                 </tr>
