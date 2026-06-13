@@ -1239,7 +1239,7 @@ const ShopImportModal = ({ onClose, onDone, userName, products }) => {
   const handlePaste = (e) => {
     // Support pasting from Excel: SKU TAB price TAB shop_name
     const text = e.clipboardData.getData("text");
-    const lines = text.trim().split(/[
+    const lines = text.trim().split(/[\r\n]+/);
 ]+/);
     if (lines.length > 1) {
       e.preventDefault();
