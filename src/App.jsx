@@ -68,6 +68,13 @@ const buildEgyptUrl = (sku, uaeUrl) => {
 };
 const skuType = (sku) => !sku ? "?" : sku.startsWith("N") ? "N" : sku.startsWith("Z") ? "Z" : "?";
 const calcCost = (price, aedRate, shipping) => parseFloat(price) * parseFloat(aedRate) + parseFloat(shipping || 0);
+const calcCostWithShop = (p, aedRate) => {
+  const shipping = parseFloat(p.shipping || 0);
+  if (p.shop_price && p.shop_price > 0) {
+    return parseFloat(p.shop_price) * parseFloat(aedRate) + shipping;
+  }
+  return p.uae_price > 0 ? calcCost(p.uae_price, aedRate, shipping) : null;
+};
 
 const roundPrice = (price) => {
   if (!price || price <= 0) return price;
@@ -584,7 +591,7 @@ const ScrapeEgyptModal = ({ onClose, products, onDone, userName, forceUpdate = f
           if (priceChanged) {
             alerts.push(`📊 <b>تغير سعر</b>\n${p.title?.slice(0, 50)}\nSKU: ${p.sku}\nمن ${prevPrice} → ${newPrice} ج.م`);
           }
-          const cost = p.uae_price > 0 ? calcCost(p.uae_price, aedRate, p.shipping || 0) : p.cost;
+          const cost = calcCostWithShop(p, aedRate) || p.cost;
           const selling_price = cost ? calcSelling(cost) : p.selling_price;
 
           // price history
@@ -904,7 +911,7 @@ const ProductRow = ({ p, aedRate, commission, onShipChange, onDelete }) => {
   const [exp, setExp] = useState(false);
   const [showSellers, setShowSellers] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
-  const cost = p.uae_price > 0 ? calcCost(p.uae_price, aedRate, p.shipping || 0) : null;
+  const cost = calcCostWithShop(p, aedRate);
   const sell = cost ? calcSelling(cost) : null;
   const netProfit = sell && cost ? calcNetProfit(sell, cost, commission) : null;
   const minPrice = cost ? calcMinPrice(cost) : null;
@@ -935,6 +942,7 @@ const ProductRow = ({ p, aedRate, commission, onShipChange, onDelete }) => {
             <span style={{ ...S.badge, background: "#f1f5f9", color: "#475569" }}>{p.sku}</span>
             {p.brand && <span style={{ ...S.badge, background: "#fef3c7", color: "#92400e" }}>{p.brand}</span>}
             {p.rating && <span style={{ ...S.badge, background: "#fef9c3", color: "#713f12" }}>⭐ {p.rating}</span>}
+            {p.shop_price && <span style={{ ...S.badge, background: "#dcfce7", color: "#15803d" }}>🏪 {p.shop_price} د.إ</span>}
             {p.not_found_uae && <span style={{ ...S.badge, background: "#ede9fe", color: "#7c3aed" }}>❓ UAE</span>}
             {p.not_found_eg && <span style={{ ...S.badge, background: "#ede9fe", color: "#7c3aed" }}>❓ مصر</span>}
           </div>
@@ -1008,6 +1016,7 @@ const ProductRow = ({ p, aedRate, commission, onShipChange, onDelete }) => {
         <tr>
           <td colSpan={11} style={{ background: "#f8fafc", padding: "10px 16px", borderBottom: "1px solid #e2e8f0", fontSize: 12 }}>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px,1fr))", gap: 8 }}>
+              {p.shop_price && <div><span style={{ color: "#94a3b8" }}>سعر المحل: </span>{p.shop_price} د.إ {p.shop_name ? `(${p.shop_name})` : ""}</div>}
               <div><span style={{ color: "#94a3b8" }}>تاريخ الإضافة: </span>{p.added_date}</div>
               <div><span style={{ color: "#94a3b8" }}>أضافه: </span>{p.added_by}</div>
               <div><span style={{ color: "#94a3b8" }}>آخر تحديث: </span>{p.last_updated}</div>
@@ -1215,6 +1224,151 @@ const exportSellerProductsCSV = (sellerName, products) => {
 };
 
 
+
+
+// ===================== SHOP IMPORT MODAL =====================
+const ShopImportModal = ({ onClose, onDone, userName, products }) => {
+  const [rows, setRows] = useState([{ sku: "", shop_price: "", shop_name: "" }]);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  const addRow = () => setRows(prev => [...prev, { sku: "", shop_price: "", shop_name: "" }]);
+  const removeRow = (i) => setRows(prev => prev.filter((_, idx) => idx !== i));
+  const updateRow = (i, field, value) => setRows(prev => prev.map((r, idx) => idx === i ? { ...r, [field]: value } : r));
+
+  const handlePaste = (e) => {
+    // Support pasting from Excel: SKU TAB price TAB shop_name
+    const text = e.clipboardData.getData("text");
+    const lines = text.trim().split(/[
+]+/);
+    if (lines.length > 1) {
+      e.preventDefault();
+      const parsed = lines.map(line => {
+        const parts = line.split(/[	,]/);
+        return {
+          sku: (parts[0] || "").trim().replace(/-\d+$/, "").toUpperCase(),
+          shop_price: (parts[1] || "").trim(),
+          shop_name: (parts[2] || "").trim(),
+        };
+      }).filter(r => r.sku);
+      setRows(parsed);
+    }
+  };
+
+  const save = async () => {
+    const valid = rows.filter(r => r.sku && r.shop_price);
+    if (valid.length === 0) { alert("مفيش بيانات صح"); return; }
+    setSaving(true);
+    setMsg(`⏳ جاري حفظ ${valid.length} منتج...`);
+
+    let updated = 0;
+    let notFound = 0;
+    const productMap = {};
+    products.forEach(p => { if (p.sku) productMap[p.sku.toUpperCase()] = p; });
+
+    for (const row of valid) {
+      const sku = row.sku.toUpperCase();
+      const p = productMap[sku];
+      if (p) {
+        await db.updateProduct(p.id, {
+          shop_price: parseFloat(row.shop_price),
+          shop_name: row.shop_name || null,
+        });
+        updated++;
+      } else {
+        notFound++;
+      }
+    }
+
+    setMsg(`✅ تم تحديث ${updated} منتج${notFound > 0 ? ` | مش موجود في الداتابيز: ${notFound}` : ""}`);
+    setSaving(false);
+    onDone();
+  };
+
+  const clearShopPrices = async () => {
+    if (!window.confirm("هتمسح سعر المحل من كل المنتجات؟")) return;
+    setSaving(true);
+    setMsg("⏳ جاري المسح...");
+    // Get all products with shop_price
+    const withShop = products.filter(p => p.shop_price);
+    for (const p of withShop) {
+      await db.updateProduct(p.id, { shop_price: null, shop_name: null });
+    }
+    setMsg(`✅ تم مسح سعر المحل من ${withShop.length} منتج`);
+    setSaving(false);
+    onDone();
+  };
+
+  return (
+    <div style={S.overlay}>
+      <div style={{ ...S.modal, maxWidth: 640 }}>
+        <div style={S.modalHead}>
+          <span style={S.modalTitle}>🏪 أسعار المحل (UAE)</span>
+          <button onClick={onClose} style={S.closeBtn}>✖</button>
+        </div>
+
+        <div style={{ ...S.card, background: "#f0fdf4", border: "1px solid #86efac" }}>
+          <p style={{ fontSize: 12, color: "#15803d" }}>
+            💡 لو عندك سعر شراء من محل في UAE أرخص من نون — حطه هنا وهيتحسب منه التكلفة وسعر البيع بدل سعر نون UAE
+          </p>
+        </div>
+
+        <p style={S.hint}>ممكن تلصق من Excel: SKU | سعر بالدرهم | اسم المحل</p>
+
+        <div style={{ maxHeight: 300, overflowY: "auto", marginBottom: 10 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ background: "#f8fafc" }}>
+                <th style={S.th}>SKU</th>
+                <th style={S.th}>سعر المحل (د.إ)</th>
+                <th style={S.th}>اسم المحل</th>
+                <th style={S.th}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, i) => (
+                <tr key={i}>
+                  <td style={S.td}>
+                    <input value={row.sku} onChange={e => updateRow(i, "sku", e.target.value.toUpperCase())}
+                      onPaste={i === 0 ? handlePaste : undefined}
+                      style={{ ...S.input, fontSize: 12 }} placeholder="N70xxxxx" dir="ltr" />
+                  </td>
+                  <td style={S.td}>
+                    <input type="number" value={row.shop_price} onChange={e => updateRow(i, "shop_price", e.target.value)}
+                      style={{ ...S.input, fontSize: 12 }} placeholder="0.00" step="0.01" />
+                  </td>
+                  <td style={S.td}>
+                    <input value={row.shop_name} onChange={e => updateRow(i, "shop_name", e.target.value)}
+                      style={{ ...S.input, fontSize: 12 }} placeholder="اسم المحل" />
+                  </td>
+                  <td style={S.td}>
+                    <button onClick={() => removeRow(i)} style={{ ...S.iconBtn, color: "#ef4444" }}>🗑️</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <button onClick={addRow} style={{ ...S.btnGhost, width: "100%", marginBottom: 10 }}>➕ إضافة سطر</button>
+
+        {msg && <div style={{ ...S.statusMsg, marginBottom: 10 }}>{msg}</div>}
+
+        <div style={{ display: "flex", gap: 8, justifyContent: "space-between" }}>
+          <button onClick={clearShopPrices} style={{ ...S.btnGhost, borderColor: "#ef4444", color: "#ef4444", fontSize: 12 }}>
+            🗑️ مسح كل أسعار المحل
+          </button>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={onClose} style={S.btnGhost}>إغلاق</button>
+            <button onClick={save} disabled={saving} style={{ ...S.btnPrimary, background: "#059669" }}>
+              💾 حفظ ({rows.filter(r => r.sku && r.shop_price).length} منتج)
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 // ===================== FRIENDLY SELLERS PAGE =====================
 const FriendlySellersPage = ({ products, onBack }) => {
@@ -1715,6 +1869,7 @@ export default function App() {
   const [showBuyBoxReview, setShowBuyBoxReview] = useState(false);
   const [showCompetitor, setShowCompetitor] = useState(false);
   const [showFriendly, setShowFriendly] = useState(false);
+  const [showShopImport, setShowShopImport] = useState(false);
   const [showScrapeUrl, setShowScrapeUrl] = useState(false);
   const [showScrapeEgypt, setShowScrapeEgypt] = useState(false);
   const [showScrapeEgyptForce, setShowScrapeEgyptForce] = useState(false);
@@ -1855,6 +2010,7 @@ export default function App() {
         <button onClick={() => setShowBuyBoxReview(true)} style={{ ...S.btnPrimary, background: "#f59e0b" }}>🔍 مراجعة Buy Box</button>
         <button onClick={() => setShowCompetitor(true)} style={{ ...S.btnPrimary, background: "#7c3aed" }}>🕵️ سكراب منافس</button>
         <button onClick={() => setShowFriendly(true)} style={{ ...S.btnPrimary, background: "#059669" }}>🤝 البائعين الأصدقاء</button>
+        <button onClick={() => setShowShopImport(true)} style={{ ...S.btnGhost, borderColor: "#059669", color: "#059669" }}>🏪 أسعار المحل</button>
         <button onClick={() => exportCSV(filtered)} style={S.btnGhost}>💾 تصدير CSV</button>
         <button onClick={() => setShowSellers(true)} style={{ ...S.btnGhost, borderColor: "#8b5cf6", color: "#8b5cf6" }}>🏪 البائعين</button>
         <button onClick={() => setShowDash(!showDash)} style={S.btnGhost}>📊</button>
@@ -1939,6 +2095,7 @@ export default function App() {
       {showScrapeUrl && <ScrapeUrlModal onClose={() => setShowScrapeUrl(false)} onDone={loadData} userName={userName} products={products} />}
       {showScrapeEgypt && <ScrapeEgyptModal onClose={() => setShowScrapeEgypt(false)} products={products} onDone={loadData} userName={userName} forceUpdate={false} />}
       {showScrapeEgyptForce && <ScrapeEgyptModal onClose={() => setShowScrapeEgyptForce(false)} products={products} onDone={loadData} userName={userName} forceUpdate={true} />}
+      {showShopImport && <ShopImportModal onClose={() => setShowShopImport(false)} onDone={loadData} userName={userName} products={products} />}
       {showFriendly && <FriendlySellersPage products={products} onBack={() => setShowFriendly(false)} />}
       {showCompetitor && <CompetitorScrapeModal onClose={() => setShowCompetitor(false)} onDone={loadData} userName={userName} products={products} />}
       {showBuyBoxReview && <BuyBoxReviewModal onClose={() => setShowBuyBoxReview(false)} products={products} onDone={loadData} userName={userName} />}
