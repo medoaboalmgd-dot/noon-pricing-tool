@@ -83,6 +83,8 @@ const roundPrice = (price) => {
   return best;
 };
 const calcSelling = (cost) => roundPrice(cost * 1.6);
+const calcMaxPrice = (cost) => roundPrice(cost * 1.65);
+const calcMinPrice = (cost) => cost * 1.35; // No rounding for min (floor check)
 const calcMargin = (sell, cost) => cost > 0 ? (((sell - cost) / sell) * 100).toFixed(1) : 0;
 const calcNetProfit = (sell, cost, commissionPct) => sell * (1 - commissionPct / 100) - cost;
 const fmtEGP = (n) => n != null ? `${Math.round(n).toLocaleString("ar-EG")} ج.م` : "—";
@@ -486,7 +488,7 @@ const ScrapeUrlModal = ({ onClose, onDone, userName, products }) => {
 };
 
 // ===================== SCRAPE EGYPT MODAL =====================
-const ScrapeEgyptModal = ({ onClose, products, onDone, userName }) => {
+const ScrapeEgyptModal = ({ onClose, products, onDone, userName, forceUpdate = false }) => {
   const [logs, setLogs] = useState([]);
   const [progress, setProgress] = useState(0);
   const [running, setRunning] = useState(false);
@@ -498,7 +500,11 @@ const ScrapeEgyptModal = ({ onClose, products, onDone, userName }) => {
     const token = localStorage.getItem(`apify_token_${userName}`);
     if (!token) { alert("سجل الـ Apify API Token في الإعدادات أولاً"); return; }
     setRunning(true);
-    const toScrape = products.filter(p => p.egypt_url && hoursAgo(p.last_eg_scrape) >= EG_COOLDOWN_HOURS);
+    const toScrape = products.filter(p => {
+      if (!p.egypt_url) return false;
+      if (forceUpdate) return true;
+      return hoursAgo(p.last_eg_scrape) >= EG_COOLDOWN_HOURS;
+    });
     const skippedEg = products.filter(p => p.egypt_url && hoursAgo(p.last_eg_scrape) < EG_COOLDOWN_HOURS).length;
     if (skippedEg > 0) log(`⏭️ متخطي (اتسكرب آخر ${EG_COOLDOWN_HOURS} ساعة): ${skippedEg} منتج`);
     log(`🚀 بدأ السكراب — ${toScrape.length} منتج`);
@@ -834,7 +840,7 @@ const SettingsPanel = ({ onClose, userName, setUserName, aedRate, setAedRate, co
 // ===================== DASHBOARD =====================
 const Dashboard = ({ products, commission }) => {
   const total = products.length;
-  const losers = products.filter(p => p.noon_eg_price != null && p.selling_price && parseFloat(p.noon_eg_price) < parseFloat(p.selling_price)).length;
+  const losers = products.filter(p => { if (!p.noon_eg_price || !p.cost) return false; return parseFloat(p.noon_eg_price) < p.cost * 1.35; }).length;
   const margins = products.filter(p => p.selling_price && p.cost).map(p => parseFloat(calcMargin(p.selling_price, p.cost)));
   const avgMargin = margins.length ? (margins.reduce((a, b) => a + b, 0) / margins.length).toFixed(1) : 0;
   const sellingProducts = products.filter(p => p.i_am_seller).length;
@@ -876,14 +882,18 @@ const ProductRow = ({ p, aedRate, commission, onShipChange, onDelete }) => {
   const cost = p.uae_price > 0 ? calcCost(p.uae_price, aedRate, p.shipping || 0) : null;
   const sell = cost ? calcSelling(cost) : null;
   const netProfit = sell && cost ? calcNetProfit(sell, cost, commission) : null;
-  const isLoser = p.noon_eg_price != null && sell && parseFloat(p.noon_eg_price) < sell;
+  const minPrice = cost ? calcMinPrice(cost) : null;
+  const maxPrice = cost ? calcMaxPrice(cost) : null;
+  const netProfitPct = sell && cost ? ((sell * (1 - commission/100) - cost) / sell) * 100 : null;
+  const isLoser = p.noon_eg_price != null && minPrice && parseFloat(p.noon_eg_price) < minPrice;
+  const isLowMargin = netProfitPct != null && netProfitPct < 10;
   const priceChanged = p.prev_noon_eg_price != null && p.prev_noon_eg_price !== p.noon_eg_price;
   const cheaperExists = p.i_am_seller && !p.i_have_buy_box;
   const hasHistory = Array.isArray(p.price_history) && p.price_history.length > 1;
 
   return (
     <>
-      <tr style={{ ...S.tr, background: isLoser ? "#fff5f5" : cheaperExists ? "#fffbeb" : (p.not_found_uae || p.not_found_eg) ? "#f5f3ff" : "white" }}>
+      <tr style={{ ...S.tr, background: isLoser ? "#fff5f5" : isLowMargin ? "#fff8f0" : cheaperExists ? "#fffbeb" : (p.not_found_uae || p.not_found_eg) ? "#f5f3ff" : "white" }}>
         <td style={S.td}>
           {p.image ? <img src={p.image} alt="" style={S.thumb} onError={e => e.target.style.display = "none"} />
             : <div style={S.noThumb}>📦</div>}
@@ -907,7 +917,12 @@ const ProductRow = ({ p, aedRate, commission, onShipChange, onDelete }) => {
         </td>
         <td style={{ ...S.td, textAlign: "center" }}>{fmtEGP(cost)}</td>
         <td style={{ ...S.td, textAlign: "center" }}>
-          {sell ? <strong style={{ color: "#059669" }}>{fmtEGP(sell)}</strong> : "—"}
+          {sell ? (
+            <div>
+              <strong style={{ color: "#059669" }}>{fmtEGP(sell)}</strong>
+              {minPrice && <div style={{ fontSize: 10, color: "#94a3b8" }}>أدنى: {fmtEGP(minPrice)} | أقصى: {fmtEGP(maxPrice)}</div>}
+            </div>
+          ) : "—"}
         </td>
         <td style={{ ...S.td, textAlign: "center" }}>
           {netProfit != null
@@ -1140,6 +1155,30 @@ const BuyBoxReviewModal = ({ onClose, products, onDone, userName }) => {
   );
 };
 
+
+const exportSellersCSV = (sellers) => {
+  const headers = ["البائع", "تقييم", "عدد التقييمات", "منتجات مشتركة"];
+  const rows = sellers.map(s => [s.name, s.rating || "", s.num_ratings || "", s.products.length]);
+  const csv = [headers, ...rows].map(r => r.map(c => `"${c ?? ""}"`).join(",")).join("\n");
+  const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `sellers_${today()}.csv`; a.click();
+};
+
+const exportSellerProductsCSV = (sellerName, products) => {
+  if (!products) return;
+  const headers = ["SKU", "الاسم", "سعر UAE", "سعر مصر", "سعر البائع", "الفرق", "لينك مصر"];
+  const rows = products.map(p => {
+    const so = p.sellers?.find(s => normalizeSellerName(s.seller) === normalizeSellerName(sellerName));
+    const mo = p.sellers?.find(s => normalizeSellerName(s.seller) === normalizeSellerName(MY_ACCOUNT));
+    const sp = so ? parseFloat(so.price) : null;
+    const mp = mo ? parseFloat(mo.price) : null;
+    return [p.sku, p.title, p.uae_price, p.noon_eg_price, sp || "", sp && mp ? mp - sp : "", p.egypt_url || ""];
+  });
+  const csv = [headers, ...rows].map(r => r.map(c => `"${c ?? ""}"`).join(",")).join("\n");
+  const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `seller_${sellerName}_${today()}.csv`; a.click();
+};
+
 // ===================== SELLERS PAGE =====================
 const SellersPage = ({ products, onBack }) => {
   const [selectedSeller, setSelectedSeller] = useState(null);
@@ -1167,17 +1206,37 @@ const SellersPage = ({ products, onBack }) => {
 
   const sellers = Object.values(sellersMap).sort((a, b) => b.products.length - a.products.length);
 
+  const [sellerSearch, setSellerSearch] = useState("");
+  const [sellerPriceFilter, setSellerPriceFilter] = useState("");
+  const filteredSellers = sellers.filter(s => s.name.toLowerCase().includes(sellerSearch.toLowerCase()));
+
   if (selectedSeller) {
     const sel = sellersMap[selectedSeller];
     return (
       <div style={S.app} dir="rtl">
         <div style={{ ...S.actions, alignItems: "center" }}>
           <button onClick={() => setSelectedSeller(null)} style={S.btnGhost}>← رجوع للبائعين</button>
+          <button onClick={() => exportSellerProductsCSV(selectedSeller, sel?.products)} style={S.btnGhost}>💾 Export</button>
           <strong style={{ fontSize: 15 }}>🏪 {selectedSeller}</strong>
           {sel?.rating && <span style={{ ...S.badge, background: "#fef9c3", color: "#713f12", fontSize: 13 }}>⭐ {sel.rating} ({sel.num_ratings})</span>}
           <span style={{ color: "#64748b", fontSize: 13 }}>{sel?.products.length} منتج مشترك</span>
         </div>
-        <div style={S.tableWrap}>
+        <div style={{ display:"flex", gap:8, padding:"10px 20px", background:"#fff", borderBottom:"1px solid #e2e8f0" }}>
+          <select onChange={e => setSellerPriceFilter(e.target.value)} style={S.sel}>
+            <option value="">كل المنتجات</option>
+            <option value="cheaper_than_me">أرخص مني</option>
+            <option value="more_than_me">أغلى مني</option>
+          </select>
+          {sellerPriceFilter && (
+            <span style={{ fontSize: 13, color: "#6366f1", alignSelf:"center" }}>
+              {sellerPriceFilter === "cheaper_than_me"
+                ? `أرخص منك في ${sel?.products.filter(p => { const so = p.sellers?.find(s => normalizeSellerName(s.seller) === normalizeSellerName(selectedSeller)); const mo = p.sellers?.find(s => normalizeSellerName(s.seller) === normalizeSellerName(MY_ACCOUNT)); return so && mo && parseFloat(so.price) < parseFloat(mo.price); }).length} منتج`
+                : `أغلى منك في ${sel?.products.filter(p => { const so = p.sellers?.find(s => normalizeSellerName(s.seller) === normalizeSellerName(selectedSeller)); const mo = p.sellers?.find(s => normalizeSellerName(s.seller) === normalizeSellerName(MY_ACCOUNT)); return so && mo && parseFloat(so.price) > parseFloat(mo.price); }).length} منتج`
+              }
+            </span>
+          )}
+        </div>
+      <div style={S.tableWrap}>
           <table style={S.table}>
             <thead>
               <tr style={{ background: "#f8fafc" }}>
@@ -1185,7 +1244,15 @@ const SellersPage = ({ products, onBack }) => {
               </tr>
             </thead>
             <tbody>
-              {sel?.products.map(p => {
+              {sel?.products.filter(p => {
+                if (!sellerPriceFilter) return true;
+                const so = p.sellers?.find(s => normalizeSellerName(s.seller) === normalizeSellerName(selectedSeller));
+                const mo = p.sellers?.find(s => normalizeSellerName(s.seller) === normalizeSellerName(MY_ACCOUNT));
+                if (!so || !mo) return false;
+                if (sellerPriceFilter === "cheaper_than_me") return parseFloat(so.price) < parseFloat(mo.price);
+                if (sellerPriceFilter === "more_than_me") return parseFloat(so.price) > parseFloat(mo.price);
+                return true;
+              }).map(p => {
                 const sellerOffer = p.sellers?.find(s => normalizeSellerName(s.seller) === normalizeSellerName(selectedSeller));
                 const sellerPrice = sellerOffer ? parseFloat(sellerOffer.price) : null;
                 const myOffer = p.sellers?.find(s => normalizeSellerName(s.seller) === normalizeSellerName(MY_ACCOUNT));
@@ -1233,7 +1300,7 @@ const SellersPage = ({ products, onBack }) => {
               </tr>
             </thead>
             <tbody>
-              {sellers.map((s, i) => (
+              {filteredSellers.map((s, i) => (
                 <tr key={i} style={S.tr}>
                   <td style={S.td}><strong>{s.name}</strong></td>
                   <td style={{ ...S.td, textAlign: "center" }}>
@@ -1269,6 +1336,7 @@ export default function App() {
   const [showBuyBoxReview, setShowBuyBoxReview] = useState(false);
   const [showScrapeUrl, setShowScrapeUrl] = useState(false);
   const [showScrapeEgypt, setShowScrapeEgypt] = useState(false);
+  const [showScrapeEgyptForce, setShowScrapeEgyptForce] = useState(false);
   const [showDash, setShowDash] = useState(true);
   const [activeTab, setActiveTab] = useState("all");
   const [search, setSearch] = useState("");
@@ -1340,7 +1408,7 @@ export default function App() {
   const filtered = products.filter(p => {
     if (activeTab === "N" && p.sku_type !== "N") return false;
     if (activeTab === "Z" && p.sku_type !== "Z") return false;
-    if (activeTab === "losers" && !(p.noon_eg_price != null && p.selling_price && parseFloat(p.noon_eg_price) < parseFloat(p.selling_price))) return false;
+    if (activeTab === "losers") { const min = p.cost ? p.cost * 1.35 : null; if (!p.noon_eg_price || !min || parseFloat(p.noon_eg_price) >= min) return false; }
     if (activeTab === "changed" && !(p.prev_noon_eg_price != null && p.prev_noon_eg_price !== p.noon_eg_price)) return false;
     if (activeTab === "not_found" && !(p.not_found_uae || p.not_found_eg)) return false;
     if (activeTab === "z_uae_only" && !(p.sku_type === "Z" && !p.i_am_seller && (p.noon_eg_price === null || p.not_found_eg))) return false;
@@ -1368,7 +1436,7 @@ export default function App() {
     buybox: products.filter(p => p.i_have_buy_box).length,
     cheaper_exists: products.filter(p => p.i_am_seller && !p.i_have_buy_box).length,
     not_selling: products.filter(p => p.noon_eg_price != null && !p.i_am_seller).length,
-    losers: products.filter(p => p.noon_eg_price != null && p.selling_price && parseFloat(p.noon_eg_price) < parseFloat(p.selling_price)).length,
+    losers: products.filter(p => { if (!p.noon_eg_price || !p.cost) return false; const min = p.cost * 1.35; return parseFloat(p.noon_eg_price) < min; }).length,
     changed: products.filter(p => p.prev_noon_eg_price != null && p.prev_noon_eg_price !== p.noon_eg_price).length,
     not_found: products.filter(p => p.not_found_uae || p.not_found_eg).length,
     z_uae_only: products.filter(p => p.sku_type === "Z" && !p.i_am_seller && (p.noon_eg_price === null || p.not_found_eg)).length,
@@ -1397,6 +1465,7 @@ export default function App() {
         <button onClick={() => setShowScrapeUrl(true)} style={{ ...S.btnPrimary, background: "#7c3aed" }}>🔍 سكراب كاتيجوري</button>
         <button onClick={() => setShowSkuImport(true)} style={{ ...S.btnPrimary, background: "#0891b2" }}>📋 استيراد SKUs</button>
         <button onClick={() => setShowScrapeEgypt(true)} style={{ ...S.btnPrimary, background: "#059669" }}>🇪🇬 تحديث أسعار مصر</button>
+        <button onClick={() => setShowScrapeEgyptForce(true)} style={{ ...S.btnGhost, borderColor: "#059669", color: "#059669" }}>⚡ تحديث إجباري</button>
         <button onClick={() => setShowBuyBoxReview(true)} style={{ ...S.btnPrimary, background: "#f59e0b" }}>🔍 مراجعة Buy Box</button>
         <button onClick={() => exportCSV(filtered)} style={S.btnGhost}>💾 تصدير CSV</button>
         <button onClick={() => setShowSellers(true)} style={{ ...S.btnGhost, borderColor: "#8b5cf6", color: "#8b5cf6" }}>🏪 البائعين</button>
@@ -1480,7 +1549,8 @@ export default function App() {
 
       {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} userName={userName} setUserName={setUserName} aedRate={aedRate} setAedRate={setAedRate} commission={commission} setCommission={setCommission} />}
       {showScrapeUrl && <ScrapeUrlModal onClose={() => setShowScrapeUrl(false)} onDone={loadData} userName={userName} products={products} />}
-      {showScrapeEgypt && <ScrapeEgyptModal onClose={() => setShowScrapeEgypt(false)} products={products} onDone={loadData} userName={userName} />}
+      {showScrapeEgypt && <ScrapeEgyptModal onClose={() => setShowScrapeEgypt(false)} products={products} onDone={loadData} userName={userName} forceUpdate={false} />}
+      {showScrapeEgyptForce && <ScrapeEgyptModal onClose={() => setShowScrapeEgyptForce(false)} products={products} onDone={loadData} userName={userName} forceUpdate={true} />}
       {showBuyBoxReview && <BuyBoxReviewModal onClose={() => setShowBuyBoxReview(false)} products={products} onDone={loadData} userName={userName} />}
       {showSkuImport && <SkuImportModal onClose={() => setShowSkuImport(false)} onDone={loadData} userName={userName} products={products} />}
     </>
