@@ -54,6 +54,9 @@ const db = {
   updateProduct: (id, data) => sb(`products?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(data) }),
   deleteProduct: (id) => sb(`products?id=eq.${id}`, { method: "DELETE", prefer: "return=minimal" }),
   getSetting: async (key) => { const r = await sb(`settings?key=eq.${encodeURIComponent(key)}&select=value`); return r?.[0]?.value ?? null; },
+  getFriendlySellers: () => sb("friendly_sellers?order=created_at.desc&select=*"),
+  addFriendlySeller: (data) => sb("friendly_sellers", { method: "POST", prefer: "return=representation", body: JSON.stringify(data) }),
+  deleteFriendlySeller: (id) => sb(`friendly_sellers?id=eq.${id}`, { method: "DELETE", prefer: "return=minimal" }),
   setSetting: (key, value) => sb("settings", { method: "POST", prefer: "resolution=merge-duplicates,return=representation", body: JSON.stringify({ key, value }) }),
 };
 
@@ -1189,6 +1192,195 @@ const exportSellerProductsCSV = (sellerName, products) => {
 };
 
 
+
+// ===================== FRIENDLY SELLERS PAGE =====================
+const FriendlySellersPage = ({ products, onBack }) => {
+  const [friendlySellers, setFriendlySellers] = useState([]);
+  const [selectedSeller, setSelectedSeller] = useState(null);
+  const [newName, setNewName] = useState("");
+  const [newCode, setNewCode] = useState("");
+  const [newNotes, setNewNotes] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [adding, setAdding] = useState(false);
+  const [showAddForm, setShowAddForm] = useState(false);
+
+  useEffect(() => {
+    db.getFriendlySellers().then(data => {
+      setFriendlySellers(data || []);
+      setLoading(false);
+    });
+  }, []);
+
+  const addSeller = async () => {
+    if (!newName.trim()) { alert("اكتب اسم البائع"); return; }
+    setAdding(true);
+    const data = {
+      seller_name: newName.trim(),
+      partner_code: newCode.trim() || null,
+      notes: newNotes.trim() || null,
+    };
+    const result = await db.addFriendlySeller(data);
+    setFriendlySellers(prev => [...(result || []), ...prev]);
+    setNewName(""); setNewCode(""); setNewNotes("");
+    setShowAddForm(false);
+    setAdding(false);
+  };
+
+  const deleteSeller = async (id) => {
+    if (!window.confirm("مسح البائع ده من قايمة الأصدقاء؟")) return;
+    await db.deleteFriendlySeller(id);
+    setFriendlySellers(prev => prev.filter(s => s.id !== id));
+    if (selectedSeller?.id === id) setSelectedSeller(null);
+  };
+
+  // Get shared products for a friendly seller
+  const getSharedProducts = (sellerName) => {
+    return products.filter(p =>
+      Array.isArray(p.sellers) &&
+      p.sellers.some(s => normalizeSellerName(s.seller) === normalizeSellerName(sellerName))
+    );
+  };
+
+  if (selectedSeller) {
+    const shared = getSharedProducts(selectedSeller.seller_name);
+    return (
+      <div style={S.app} dir="rtl">
+        <div style={{ ...S.actions, alignItems: "center", gap: 8 }}>
+          <button onClick={() => setSelectedSeller(null)} style={S.btnGhost}>← رجوع</button>
+          <strong style={{ fontSize: 15 }}>🤝 {selectedSeller.seller_name}</strong>
+          {selectedSeller.partner_code && <span style={{ ...S.badge, background: "#f1f5f9", color: "#475569" }}>p-{selectedSeller.partner_code}</span>}
+          <span style={{ color: "#64748b", fontSize: 13 }}>{shared.length} منتج مشترك</span>
+          {selectedSeller.notes && <span style={{ fontSize: 12, color: "#94a3b8" }}>📝 {selectedSeller.notes}</span>}
+        </div>
+        {shared.length === 0 ? (
+          <div style={S.empty}>مفيش منتجات مشتركة دلوقتي — اعمل سكراب نون مصر عشان تظهر</div>
+        ) : (
+          <div style={S.tableWrap}>
+            <table style={S.table}>
+              <thead>
+                <tr style={{ background: "#f8fafc" }}>
+                  {["صورة", "المنتج", "SKU", "سعر مصر", "سعره", "أنت عارضه؟", ""].map(h => <th key={h} style={S.th}>{h}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {shared.map(p => {
+                  const friendOffer = p.sellers?.find(s => normalizeSellerName(s.seller) === normalizeSellerName(selectedSeller.seller_name));
+                  const friendPrice = friendOffer ? parseFloat(friendOffer.price) : null;
+                  return (
+                    <tr key={p.id} style={S.tr}>
+                      <td style={S.td}>{p.image ? <img src={p.image} alt="" style={S.thumb} onError={e => e.target.style.display="none"} /> : <div style={S.noThumb}>📦</div>}</td>
+                      <td style={{ ...S.td, maxWidth: 220 }}>
+                        <div style={S.prodTitle}>{p.title || "—"}</div>
+                        {p.egypt_url && <a href={p.egypt_url} target="_blank" rel="noreferrer" style={{ fontSize: 11, color: "#6366f1" }}>فتح في نون مصر ↗</a>}
+                      </td>
+                      <td style={S.td}><span style={{ ...S.badge, background: "#f1f5f9", color: "#475569" }}>{p.sku}</span></td>
+                      <td style={{ ...S.td, textAlign: "center" }}>{fmtEGP(p.noon_eg_price)}</td>
+                      <td style={{ ...S.td, textAlign: "center" }}>
+                        {friendPrice ? <strong style={{ color: "#6366f1" }}>{fmtEGP(friendPrice)}</strong> : "—"}
+                      </td>
+                      <td style={{ ...S.td, textAlign: "center" }}>
+                        {p.i_am_seller
+                          ? <span style={{ color: "#f59e0b", fontWeight: 600 }}>⚠️ نعم</span>
+                          : <span style={{ color: "#059669", fontWeight: 600 }}>✅ لأ</span>}
+                      </td>
+                      <td style={{ ...S.td, textAlign: "center" }}>
+                        {p.egypt_url && <a href={p.egypt_url} target="_blank" rel="noreferrer" style={S.iconBtn}>🇪🇬</a>}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div style={S.app} dir="rtl">
+      <div style={{ ...S.actions, alignItems: "center", gap: 8 }}>
+        <button onClick={onBack} style={S.btnGhost}>← رجوع</button>
+        <strong style={{ fontSize: 15 }}>🤝 البائعين الأصدقاء ({friendlySellers.length})</strong>
+        <button onClick={() => setShowAddForm(!showAddForm)} style={{ ...S.btnPrimary, background: "#059669" }}>➕ إضافة بائع</button>
+      </div>
+
+      {showAddForm && (
+        <div style={{ padding: "12px 20px", background: "#f0fdf4", borderBottom: "1px solid #86efac" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 2fr auto", gap: 8, alignItems: "end" }}>
+            <div>
+              <label style={{ ...S.label, marginBottom: 4 }}>اسم البائع</label>
+              <input value={newName} onChange={e => setNewName(e.target.value)} style={S.input} placeholder="اسم البائع على نون" />
+            </div>
+            <div>
+              <label style={{ ...S.label, marginBottom: 4 }}>Partner Code</label>
+              <input value={newCode} onChange={e => setNewCode(e.target.value)} style={S.input} placeholder="43181" dir="ltr" />
+            </div>
+            <div>
+              <label style={{ ...S.label, marginBottom: 4 }}>ملاحظات</label>
+              <input value={newNotes} onChange={e => setNewNotes(e.target.value)} style={S.input} placeholder="اختياري" />
+            </div>
+            <button onClick={addSeller} disabled={adding} style={{ ...S.btnPrimary, background: "#059669", height: 38 }}>
+              {adding ? "..." : "✅ حفظ"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div style={S.tableWrap}>
+        {loading ? <div style={S.empty}>⏳ جاري التحميل...</div>
+          : friendlySellers.length === 0 ? (
+            <div style={S.empty}>
+              <div style={{ fontSize: 36, marginBottom: 12 }}>🤝</div>
+              <div>مفيش بائعين أصدقاء لسه — اضغط «➕ إضافة بائع» للبدء</div>
+            </div>
+          ) : (
+            <table style={S.table}>
+              <thead>
+                <tr style={{ background: "#f8fafc" }}>
+                  {["البائع", "Partner Code", "منتجات مشتركة", "أنت عارض منها", "ملاحظات", ""].map(h => <th key={h} style={S.th}>{h}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {friendlySellers.map(s => {
+                  const shared = getSharedProducts(s.seller_name);
+                  const iAmSelling = shared.filter(p => p.i_am_seller).length;
+                  return (
+                    <tr key={s.id} style={{ ...S.tr, background: iAmSelling > 0 ? "#fffbeb" : "white" }}>
+                      <td style={S.td}><strong>{s.seller_name}</strong></td>
+                      <td style={S.td}>
+                        {s.partner_code
+                          ? <span style={{ ...S.badge, background: "#f1f5f9", color: "#475569" }}>p-{s.partner_code}</span>
+                          : <span style={{ color: "#d1d5db" }}>—</span>}
+                      </td>
+                      <td style={{ ...S.td, textAlign: "center" }}>
+                        <span style={{ ...S.badge, background: "#dbeafe", color: "#1d4ed8" }}>{shared.length}</span>
+                      </td>
+                      <td style={{ ...S.td, textAlign: "center" }}>
+                        {iAmSelling > 0
+                          ? <span style={{ ...S.badge, background: "#fef3c7", color: "#92400e" }}>⚠️ {iAmSelling} منتج</span>
+                          : <span style={{ color: "#059669", fontWeight: 600 }}>✅ لأ</span>}
+                      </td>
+                      <td style={{ ...S.td, color: "#64748b", fontSize: 12 }}>{s.notes || "—"}</td>
+                      <td style={{ ...S.td, textAlign: "center" }}>
+                        <div style={{ display: "flex", gap: 4, justifyContent: "center" }}>
+                          {shared.length > 0 && (
+                            <button onClick={() => setSelectedSeller(s)} style={S.btnPrimary}>عرض المنتجات</button>
+                          )}
+                          <button onClick={() => deleteSeller(s.id)} style={{ ...S.iconBtn, color: "#ef4444" }}>🗑️</button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+      </div>
+    </div>
+  );
+};
+
 // ===================== COMPETITOR SCRAPE MODAL =====================
 const CompetitorScrapeModal = ({ onClose, onDone, userName, products }) => {
   const [partnerCode, setPartnerCode] = useState("");
@@ -1499,6 +1691,7 @@ export default function App() {
   const [showSkuImport, setShowSkuImport] = useState(false);
   const [showBuyBoxReview, setShowBuyBoxReview] = useState(false);
   const [showCompetitor, setShowCompetitor] = useState(false);
+  const [showFriendly, setShowFriendly] = useState(false);
   const [showScrapeUrl, setShowScrapeUrl] = useState(false);
   const [showScrapeEgypt, setShowScrapeEgypt] = useState(false);
   const [showScrapeEgyptForce, setShowScrapeEgyptForce] = useState(false);
@@ -1611,7 +1804,7 @@ export default function App() {
 
   return (
     <div style={S.app} dir="rtl">
-      {showSellers ? <SellersPage products={products} onBack={() => setShowSellers(false)} /> : <>
+      {showFriendly ? <FriendlySellersPage products={products} onBack={() => setShowFriendly(false)} /> : showSellers ? <SellersPage products={products} onBack={() => setShowSellers(false)} /> : <>
       <header style={S.header}>
         <div style={S.hLeft}>
           <div style={S.logo}>🛒</div>
@@ -1633,6 +1826,7 @@ export default function App() {
         <button onClick={() => setShowScrapeEgyptForce(true)} style={{ ...S.btnGhost, borderColor: "#059669", color: "#059669" }}>⚡ تحديث إجباري</button>
         <button onClick={() => setShowBuyBoxReview(true)} style={{ ...S.btnPrimary, background: "#f59e0b" }}>🔍 مراجعة Buy Box</button>
         <button onClick={() => setShowCompetitor(true)} style={{ ...S.btnPrimary, background: "#7c3aed" }}>🕵️ سكراب منافس</button>
+        <button onClick={() => setShowFriendly(true)} style={{ ...S.btnPrimary, background: "#059669" }}>🤝 البائعين الأصدقاء</button>
         <button onClick={() => exportCSV(filtered)} style={S.btnGhost}>💾 تصدير CSV</button>
         <button onClick={() => setShowSellers(true)} style={{ ...S.btnGhost, borderColor: "#8b5cf6", color: "#8b5cf6" }}>🏪 البائعين</button>
         <button onClick={() => setShowDash(!showDash)} style={S.btnGhost}>📊</button>
@@ -1717,6 +1911,7 @@ export default function App() {
       {showScrapeUrl && <ScrapeUrlModal onClose={() => setShowScrapeUrl(false)} onDone={loadData} userName={userName} products={products} />}
       {showScrapeEgypt && <ScrapeEgyptModal onClose={() => setShowScrapeEgypt(false)} products={products} onDone={loadData} userName={userName} forceUpdate={false} />}
       {showScrapeEgyptForce && <ScrapeEgyptModal onClose={() => setShowScrapeEgyptForce(false)} products={products} onDone={loadData} userName={userName} forceUpdate={true} />}
+      {showFriendly && <FriendlySellersPage products={products} onBack={() => setShowFriendly(false)} />}
       {showCompetitor && <CompetitorScrapeModal onClose={() => setShowCompetitor(false)} onDone={loadData} userName={userName} products={products} />}
       {showBuyBoxReview && <BuyBoxReviewModal onClose={() => setShowBuyBoxReview(false)} products={products} onDone={loadData} userName={userName} />}
       {showSkuImport && <SkuImportModal onClose={() => setShowSkuImport(false)} onDone={loadData} userName={userName} products={products} />}
